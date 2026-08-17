@@ -10,7 +10,7 @@ from langgraph.graph import add_messages, StateGraph
 from pydantic import BaseModel, Field
 
 from backend.app.models.response import Attraction, WeatherInfo, Hotel, \
-    ErrorResponse, TripPlan, POIInfo, RouteInfo, Meal, Location
+    ErrorResponse, TripPlan, DayPlan, Budget, POIInfo, RouteInfo, Meal, Location
 from backend.app.nodes.llm import get_llm
 from backend.app.nodes.tools.amap_mcp_servers import get_amap_mcp_client, get_amap_mcp_tools
 
@@ -190,7 +190,7 @@ class travel_plan_agents:
 - city: 所在城市
 - type: POI类型，分号分隔的层级(如"科教文化服务;博物馆;博物馆")
 - alias: 别名
-- photos: 图片信息，包含url字段(图片链接)
+- photo: 图片URL(字符串，可能是单个URL或多个逗号分隔的URL，也可能为空)
 - cost: 费用信息(可能为空列表)
 - opentime2: 详细开放时间描述
 - rating: 评分(字符串，如"4.9"，可能为空)
@@ -204,11 +204,12 @@ class travel_plan_agents:
 6. visit_duration: 根据POI类型推断建议游览时长(分钟)，如博物馆/纪念馆120、公园90、寺庙60等
 7. rating: 将字符串评分转为数值(如"4.9"→4.9)，为空时填null
 8. ticket_price: 优先从 cost 字段提取(元)；cost 为空时根据景点知名度合理估计，免费景点填0
-9. photos: 提取 photos 中的 url 组成图片链接列表
-10. image_url: 取 photos 中的第一个 url；无图片时填null
+9. photos: 从 photo 字段提取图片URL组成字符串列表(逗号分隔时拆分)；photo 为空时填空列表
+10. image_url: 取 photo 字段的第一个URL；无图片时填null
 11. description: 用一句话概括景点特色，可结合 type、alias、business_area 等信息，并附上关键开放时间(opentime2)要点
 12. 只保留真正适合旅游的景点，过滤掉商场、写字楼、住宅等非景点数据
 13. 不得编造原始数据中不存在的名称、地址或经纬度
+14. 如果景点名称重复或者大部分重复，可以合理删减重复项，保留一个代表项
 
 城市: {state['city']}
 用户偏好: {state.get('preferences', [])}
@@ -224,6 +225,29 @@ POI详情数据:
                 {"role": "user", "content": enrich_prompt}
             ])
             print(f"[景点Agent] 完成，共 {len(result.attractions)} 个景点")
+
+            # 确定性回填照片：LLM 可能漏填/填错图片字段，按 poi_id/name 从原始数据直接注入，保证图片不丢
+            raw_items = []
+            try:
+                raw_items = json.loads(raw_data)
+            except (json.JSONDecodeError, TypeError):
+                raw_items = []
+            photo_by_id, photo_by_name = {}, {}
+            for item in raw_items:
+                pid, pname = item.get("id") or "", item.get("name") or ""
+                photo = item.get("photo") or ""
+                urls = [u.strip() for u in str(photo).split(",") if u.strip()] if photo else []
+                if urls:
+                    if pid:
+                        photo_by_id[pid] = urls
+                    if pname:
+                        photo_by_name[pname] = urls
+            for a in result.attractions:
+                urls = photo_by_id.get(a.poi_id or "") or photo_by_name.get(a.name or "")
+                if urls:
+                    a.photos = urls
+                    a.image_url = a.image_url or urls[0]
+
             return {"attractions_result": result.attractions}
 
 
@@ -272,8 +296,9 @@ POI详情数据:
             print(f"[天气Agent] 解析到 {len(weather_list)} 天天气数据")
             return {"weather_result": weather_list}
 
-        # 酒店节点1：LLM选取路线起点/终点锚点景点
-        async def hotel_model_node(state: PlannerState):
+
+        # 酒店节点1：以锚点景点坐标周边搜索酒店，过滤去重并保存前k个
+        async def hotel_tool_node(state: PlannerState):
             attractions = state.get("attractions_result", [])
             if not attractions:
                 print("[酒店Agent] 无可用景点，无法选取酒店位置")
@@ -281,30 +306,6 @@ POI详情数据:
 
             attraction_names = [a.name for a in attractions]
 
-            class AnchorAttractions(BaseModel):
-                names: List[str]
-
-            select_prompt = f"""{state['city']}之行的候选景点如下:
-            {attraction_names}
-
-            请从中选出2-3个最适合作为每日旅游路线起点或终点的景点(优先选知名地标、交通便利、游览优先级高的景点)，后续将以这些景点为中心搜索周边酒店。
-
-            要求:
-            1. 景点名必须来自候选列表，不得编造
-            2. 选取3-4个
-            """
-            print("[酒店Agent] LLM选取路线锚点景点中...")
-            structured_llm = self.llm.with_structured_output(AnchorAttractions)
-            result = await structured_llm.ainvoke([
-                {"role": "system",
-                 "content": "你是旅行路线规划专家，擅长挑选适合作为路线起终点的景点。"},
-                {"role": "user", "content": select_prompt}
-            ])
-            print(f"[酒店Agent] 锚点景点: {result.names}")
-            return {"hotel_anchors": result.names}
-
-        # 酒店节点2：以锚点景点坐标周边搜索酒店，过滤去重并保存前6个
-        async def hotel_tool_node(state: PlannerState):
             around_tool_name = "maps_around_search"
             detail_tool_name = "maps_search_detail"
             around_tool = next((t for t in self.mcp_tools if t.name == around_tool_name), None)
@@ -315,7 +316,7 @@ POI详情数据:
             if detail_tool is None:
                 return {"parse_error": [ErrorResponse(message="酒店详情工具未找到")]}
 
-            anchors = state.get("hotel_anchors", [])
+            anchors = attraction_names
             if not anchors:
                 return {"parse_error": [ErrorResponse(message="锚点景点为空")]}
 
@@ -347,7 +348,7 @@ POI详情数据:
                     print(f"[酒店Agent] {anchor_name} 周边搜索结果解析失败")
                     continue
 
-                for p in poi_list[:2]:
+                for p in poi_list[:1]:
                     poi_id = p.get("id")
                     # typecode以10开头为住宿服务大类
                     if poi_id and poi_id not in hotel_pois and str(p.get("typecode", "")).startswith("10"):
@@ -378,10 +379,11 @@ POI详情数据:
 
             # 保存原始数据供enrich节点使用
             return {
+                "hotel_anchors": anchors,
                 "hotels_raw": json.dumps(hotel_details, ensure_ascii=False)
             }
 
-        # 酒店节点3：确定性解析酒店原始数据，直接映射为酒店模型
+        # 酒店节点2：确定性解析酒店原始数据，直接映射为酒店模型
         def hotel_enrich_node(state: PlannerState):
             raw_data = state.get("hotels_raw", "")
             if not raw_data:
@@ -480,17 +482,16 @@ POI详情数据:
             except (ValueError, KeyError):
                 date_list = [state.get("start_date", "")]
 
+            # 只给LLM精简信息(名称/类别/时长/价格)，坐标、地址、描述、图片等详情后续从state按名称回填
             attractions_brief = [
-                {"name": a.name, "longitude": a.location.longitude, "latitude": a.location.latitude,
-                 "address": a.address, "category": a.category, "visit_duration": a.visit_duration,
-                 "ticket_price": a.ticket_price, "description": a.description}
+                {"name": a.name, "category": a.category, "visit_duration": a.visit_duration,
+                 "ticket_price": a.ticket_price, "rating": a.rating}
                 for a in attractions if a.location is not None
             ]
             hotels_brief = [
-                {"name": h.name, "longitude": h.location.longitude if h.location else None,
-                 "latitude": h.location.latitude if h.location else None,
-                 "address": h.address, "type": h.type, "rating": h.rating,
-                 "distance": h.distance, "estimated_cost": h.estimated_cost}
+                {"name": h.name, "type": h.type, "rating": h.rating,
+                 "distance": h.distance, "estimated_cost": h.estimated_cost,
+                 "price_range": h.price_range}
                 for h in hotels
             ]
             weather_brief = [w.model_dump() for w in weather_list]
@@ -499,9 +500,20 @@ POI详情数据:
                 start_name: str = Field(..., description="当日路线起点名称(酒店名或景点名)")
                 end_name: str = Field(..., description="当日路线终点名称(景点名)")
 
+            class DayPlanBrief(BaseModel):
+                day_index: int = Field(..., description="第几天(从0开始)")
+                description: str = Field(..., description="当日行程描述")
+                transportation: str = Field(..., description="交通方式")
+                accommodation: str = Field(..., description="住宿")
+                hotel_name: str = Field(..., description="当日酒店名，从候选酒店中逐字选择")
+                attraction_names: List[str] = Field(..., description="当日景点名，按游览顺序，从候选景点中逐字选择")
+                meals: List[Meal] = Field(default=[], description="餐饮列表")
+
             class PlannerOutput(BaseModel):
-                plan: TripPlan
-                day_routes:  List[DayRoute]
+                days: List[DayPlanBrief]
+                day_routes: List[DayRoute]
+                overall_suggestions: str
+                budget: Optional[Budget] = None
 
             plan_prompt = f"""你是资深旅行规划师。请根据以下数据为游客制定一份完整的{state['city']}旅行计划。
 
@@ -513,27 +525,27 @@ POI详情数据:
     - 用户偏好: {state.get('preferences', [])}
     - 额外需求: {state.get('free_text_input', '') or '无'}
 
-    候选景点数据(含真实坐标):
+    候选景点数据(精简信息，景点坐标/地址/描述/图片/评分等详情已保存在系统中，无需输出，直接用名称引用):
     {json.dumps(attractions_brief, ensure_ascii=False)}
 
-    候选酒店数据(含真实坐标):
+    候选酒店数据(精简信息，酒店坐标/地址等详情已保存在系统中，无需输出，直接用名称引用):
     {json.dumps(hotels_brief, ensure_ascii=False)}
 
     天气数据:
     {json.dumps(weather_brief, ensure_ascii=False)}
-    
+
     错误信息：
-     {json.dumps([e.model_dump() for e in state.get("parse_error", [])], ensure_ascii=False)}
+    {json.dumps([e.model_dump() for e in state.get("parse_error", [])], ensure_ascii=False)}
 
 
     规划要求(必须严格遵守):
-    1. plan.days 必须恰好包含{travel_days}天，每天的 date 依次使用上述行程日期，day_index 从0开始
-    2. 从候选景点中挑选合适的分配到每一天，地理位置相近的景点安排在同一天；每天的景点按游览路线的合理顺序排列
-    3. 每天的 attractions 必须完整使用候选景点数据中的对象字段，不得编造景点或篡改坐标
-    4. 每天安排 visit_duration 之和不宜超过480分钟
-    5. 从候选酒店中选择1家最合适的，填入每天的 hotel 字段
+    1. days 必须恰好包含{travel_days}天，day_index 依次为0到{travel_days - 1}；每天日期由系统按 start_date 自动推算，无需输出 date 字段
+    2. 从候选景点中挑选合适的分配到每一天，地理位置相近的景点安排在同一天(可参考景点类别)；每天的景点按游览路线的合理顺序排列
+    3. attraction_names 必须逐字使用候选景点中的 name 字段，禁止编造、改名或补充详情；景点坐标/地址/描述/图片等详情由系统按名称自动补全
+    4. 每天所有景点 visit_duration 之和不宜超过480分钟
+    5. hotel_name 必须逐字使用候选酒店中的 name 字段，从候选酒店中选择1家最合适的填入每天；酒店坐标/地址等详情由系统按名称自动补全
     6. 每天安排三餐 meals，餐厅可合理推荐并估算费用
-    7. weather_info: 按 date 匹配提供的天气数据，匹配不上的日期不要编造
+    7. 天气由系统按日期自动匹配，无需输出 weather_info
     8. budget: 汇总门票(ticket_price之和)、酒店(estimated_cost×住宿晚数)、餐饮、交通的估算总额
     9. description: 概括当日行程亮点与节奏
     10. overall_suggestions: 结合天气与偏好给出总体出行建议
@@ -544,22 +556,74 @@ POI详情数据:
     3. 名称必须从候选景点/酒店数据中原样取值，禁止编造或改写
     """
 
-            print("[规划Agent] LLM生成旅行计划中...")
+            print("[规划Agent] LLM生成旅行计划框架中...")
             structured_llm = self.llm.with_structured_output(PlannerOutput)
             result = await structured_llm.ainvoke([
                 {"role": "system",
                  "content": "你是资深旅行规划师，擅长制定路线合理、数据严谨的旅行计划，绝不编造景点、酒店或坐标。"},
                 {"role": "user", "content": plan_prompt}
             ])
+            # LLM 偶发返回空计划(days/routes 为空)，重试一次
+            if not result.days or not result.day_routes:
+                print("[规划Agent] 首次返回空计划，重试一次...")
+                result = await structured_llm.ainvoke([
+                    {"role": "system",
+                     "content": "你是资深旅行规划师，擅长制定路线合理、数据严谨的旅行计划，绝不编造景点、酒店或坐标。注意：days 与 day_routes 必须非空且与旅行天数一致，禁止返回空列表。"},
+                    {"role": "user", "content": plan_prompt}
+                ])
 
-            day_route_locations = [
-                [r.start_name, r.end_name] for r in result.day_routes
-            ]
-            print(f"[规划Agent] 完成，共 {len(result.plan.days)} 天行程，"
-                  f"{len(day_route_locations)} 条每日路线起终点")
+            # 确定性重建完整计划：景点/酒店/天气/日期等具体信息全部从state按名称回填，LLM只提供计划框架
+            attractions_by_name = {a.name: a for a in attractions if a.location is not None}
+            hotels_by_name = {h.name: h for h in hotels}
+
+            days = []
+            for b in result.days:
+                day_attractions = []
+                for name in b.attraction_names:
+                    src = attractions_by_name.get(name)
+                    if src is None:
+                        print(f"[规划Agent] 景点「{name}」不在候选数据中，已跳过")
+                        continue
+                    day_attractions.append(src)
+                hotel = hotels_by_name.get(b.hotel_name)
+                if hotel is None and b.hotel_name:
+                    print(f"[规划Agent] 酒店「{b.hotel_name}」不在候选数据中，已置空")
+                date = date_list[b.day_index] if 0 <= b.day_index < len(date_list) else date_list[0]
+                days.append(DayPlan(
+                    date=date,
+                    day_index=b.day_index,
+                    description=b.description,
+                    transportation=b.transportation,
+                    accommodation=b.accommodation,
+                    hotel=hotel,
+                    attractions=day_attractions,
+                    meals=b.meals,
+                ))
+
+            day_route_locations = [[r.start_name, r.end_name] for r in result.day_routes]
+            if not days or not day_route_locations:
+                print("[规划Agent] 重试后仍为空计划，放弃本次生成")
+                return {"parse_error": [ErrorResponse(message="行程计划生成失败，请重试")], "final_plan": None}
+
+            # 确定性回填天气：每天都有天气条目（预报覆盖则用预报，未覆盖则占位空卡）
+            weather_by_date = {w.date: w for w in weather_list}
+            final_weather = [weather_by_date.get(d, WeatherInfo(date=d)) for d in date_list]
+
+            plan = TripPlan(
+                city=state["city"],
+                start_date=state["start_date"],
+                end_date=state["end_date"],
+                days=days,
+                weather_info=final_weather,
+                overall_suggestions=result.overall_suggestions,
+                budget=result.budget,
+            )
+
+            print(f"[规划Agent] 完成，共 {len(plan.days)} 天行程，"
+                  f"{len(day_route_locations)} 条每日路线起终点，天气 {len(final_weather)} 天")
 
             return {
-                    "final_plan": result.plan,
+                    "final_plan": plan,
                     "day_route_locations": day_route_locations,
                 }
 
@@ -576,7 +640,6 @@ POI详情数据:
         work_flow.add_node("attraction_tool_node", attraction_tool_node)
         work_flow.add_node("attraction_enrich_node", attraction_enrich_node)
         work_flow.add_node("weather_tool_node", weather_tool_node)
-        work_flow.add_node("hotel_model_node", hotel_model_node)
         work_flow.add_node("hotel_tool_node", hotel_tool_node)
         work_flow.add_node("hotel_enrich_node", hotel_enrich_node)
         work_flow.add_node("plan_node", plan_node)
@@ -584,8 +647,7 @@ POI详情数据:
         work_flow.add_edge(START, "attraction_tool_node")
         work_flow.add_edge(START, "weather_tool_node")
         work_flow.add_edge("attraction_tool_node", "attraction_enrich_node")
-        work_flow.add_edge("attraction_enrich_node", "hotel_model_node")
-        work_flow.add_edge("hotel_model_node", "hotel_tool_node")
+        work_flow.add_edge("attraction_enrich_node", "hotel_tool_node")
         work_flow.add_edge("hotel_tool_node", "hotel_enrich_node")
         work_flow.add_edge("hotel_enrich_node", "plan_node")
         work_flow.add_edge("weather_tool_node", "plan_node")
@@ -614,12 +676,12 @@ def get_travel_plan_agent():
 if __name__ == "__main__":
     state = {
         "city": "青岛",
-        "start_date": "2026-8-20",
-        "end_date": "2026-8-22",
+        "start_date": "2026-8-18",
+        "end_date": "2026-8-20",
         "travel_days": 3,
         "transportation": "自驾",
         "accommodation": "酒店",
-        "preferences": ["风景","啤酒","浴场"],
+        "preferences": ["风景","啤酒","崂山"],
         "free_text_input": "希望旅行氛围浪漫、轻松、惬意，慢节奏",
         "attractions_raw": "",
         "attractions_result": [],
@@ -647,10 +709,15 @@ if __name__ == "__main__":
     print(f"result[final_plan]: {result['final_plan']}")
     print(f"result[parse_error]: {result['parse_error']}")
     print(f"[plan]:")
+    print(f"天气信息: {result['final_plan'].weather_info}")
+    print(f"预算: {result['final_plan'].budget}")
+    print(f"总体建议: {result['final_plan'].overall_suggestions}")
     for day_plan in result['final_plan'].days:
         print(f"- 第{day_plan.day_index}天")
         print(f"  - 大概行程：{day_plan.description}")
         print(f"  - 交通方式：{day_plan.transportation}")
+        print(f"  - 住宿：{day_plan.accommodation}")
+        print(f"  - 推荐酒店：{day_plan.hotel}")
         print(f"  - 景点：{day_plan.attractions}")
         print(f"  - 餐饮：{day_plan.meals}")
 

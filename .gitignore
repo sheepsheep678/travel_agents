@@ -1,0 +1,16 @@
+# Python
+.venv/
+__pycache__/
+*.pyc
+
+# 前端
+node_modules/
+dist/
+
+# 环境变量(含密钥,禁止提交)
+.env
+frontend/.env
+
+# IDE
+.idea/
+.claude/

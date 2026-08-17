@@ -43,10 +43,10 @@ class Settings(BaseSettings):
     # LLM配置 (从环境变量读取,由langgraph管理)
     openai_api_key: str = ""
     openai_base_url: str = "https://dashscope.aliyuncs.com/compatible-mode/v1"
-    openai_model: str = "qwen3.7-max"
+    openai_model_id: str = "qwen3.7-max"
 
     # 日志配置
-    openai_level: str = "INFO"
+    log_level: str = "INFO"
 
     class Config:
         env_file = ".env"
@@ -104,7 +104,7 @@ def print_config():
     # 检查LLM配置
     llm_api_key = os.getenv("LLM_API_KEY") or os.getenv("OPENAI_API_KEY")
     llm_base_url = os.getenv("LLM_BASE_URL") or settings.openai_base_url
-    llm_model = os.getenv("LLM_MODEL_ID") or settings.openai_model
+    llm_model = os.getenv("LLM_MODEL_ID") or settings.openai_model_id
 
     print(f"LLM API Key: {'已配置' if llm_api_key else '未配置'}")
     print(f"LLM Base URL: {llm_base_url}")

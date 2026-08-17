@@ -8,11 +8,11 @@ def get_llm():
     if llm is None:
         settings = get_settings()
         llm = init_chat_model(
-            model=settings.openai_model,
+            model=settings.openai_model_id,
             model_provider="openai",
             base_url=settings.openai_base_url,
             api_key=settings.openai_api_key,
-            temperature=0.8,
+            temperature=0.4,
         )
     # print(f"""model: {get_settings().openai_model}
     #         base_url: {get_settings().openai_base_url}

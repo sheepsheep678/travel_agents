@@ -58,8 +58,25 @@ def _ensure_initialized():
     """确保初始化完成（同步阻塞）"""
     if _client is None:
         # 使用 asyncio.run 驱动异步初始化
-        # 注意：这是脚本写法。在 FastAPI 中不要这样用。
+        # 注意：这是脚本写法。在 FastAPI 中不要这样用，
+        # 应改由 FastAPI lifespan 调用 init_amap_mcp_async()。
         asyncio.run(_init_async())
+
+
+async def init_amap_mcp_async():
+    """异步初始化 MCP 客户端（供 FastAPI lifespan 使用）"""
+    await _init_async()
+
+
+async def close_amap_mcp():
+    """关闭 MCP 客户端（供 FastAPI lifespan shutdown 使用）
+
+    MultiServerMCPClient 没有提供 aclose/close 方法，进程退出时会自动释放连接，
+    这里只清空缓存引用，避免在关闭阶段报错。
+    """
+    global _client, _tools
+    _client = None
+    _tools = []
 
 
 def get_amap_mcp_client():

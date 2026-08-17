@@ -1,0 +1,94 @@
+/* ========== 全局设计系统：落日渐变 · 旅行主题 ========== */
+:root {
+  --sunset-1: #1b2a5b;   /* 深夜蓝 */
+  --sunset-2: #4a2d6b;   /* 紫 */
+  --sunset-3: #c75b9c;   /* 玫红 */
+  --sunset-4: #f29a4e;   /* 橙 */
+  --sunset-5: #ffd166;   /* 金 */
+
+  --gold: #ffb703;
+  --coral: #ff6b6b;
+  --teal: #43c6ac;
+
+  --glass-bg: rgba(255, 255, 255, 0.08);
+  --glass-border: rgba(255, 255, 255, 0.16);
+  --card-bg: #ffffff;
+  --text-main: #1e2a45;
+  --text-soft: #5a6b8c;
+  --radius-lg: 20px;
+  --radius-md: 14px;
+  --shadow-soft: 0 18px 40px -18px rgba(31, 42, 82, 0.35);
+  --grad-main: linear-gradient(120deg, var(--sunset-2), var(--sunset-3) 45%, var(--sunset-4));
+  --grad-gold: linear-gradient(120deg, var(--gold), var(--coral));
+}
+
+* {
+  margin: 0;
+  padding: 0;
+  box-sizing: border-box;
+}
+
+html {
+  scroll-behavior: smooth;
+}
+
+body {
+  font-family: 'PingFang SC', 'Hiragino Sans GB', 'Microsoft YaHei', 'Helvetica Neue', Arial, sans-serif;
+  color: var(--text-main);
+  -webkit-font-smoothing: antialiased;
+  background: #f4f6fb;
+}
+
+#app {
+  min-height: 100vh;
+}
+
+/* 通用渐变标题 */
+.grad-text {
+  background: var(--grad-gold);
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+}
+
+/* 通用卡片 */
+.glass-card {
+  background: var(--glass-bg);
+  border: 1px solid var(--glass-border);
+  border-radius: var(--radius-lg);
+  backdrop-filter: blur(18px);
+  -webkit-backdrop-filter: blur(18px);
+}
+
+.card {
+  background: var(--card-bg);
+  border-radius: var(--radius-lg);
+  box-shadow: var(--shadow-soft);
+}
+
+/* 柔和入场动画 */
+@keyframes fadeUp {
+  from { opacity: 0; transform: translateY(18px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+.fade-up { animation: fadeUp 0.6s ease both; }
+
+/* 呼吸动画 */
+@keyframes breathe {
+  0%, 100% { opacity: 1; transform: scale(1); }
+  50% { opacity: 0.55; transform: scale(0.96); }
+}
+.breathe { animation: breathe 1.8s ease-in-out infinite; }
+
+/* 滚动条美化 */
+::-webkit-scrollbar { width: 8px; height: 8px; }
+::-webkit-scrollbar-thumb { background: #c9d2e6; border-radius: 8px; }
+::-webkit-scrollbar-thumb:hover { background: #aab7d6; }
+
+/* antd 主题微调 */
+.ant-btn-primary {
+  background: var(--grad-main);
+  border: none;
+  box-shadow: 0 10px 24px -10px rgba(71, 45, 112, 0.8);
+}
+.ant-btn-primary:hover { opacity: 0.92; }
