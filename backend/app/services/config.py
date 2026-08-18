@@ -44,6 +44,10 @@ class Settings(BaseSettings):
     openai_api_key: str = ""
     openai_base_url: str = "https://dashscope.aliyuncs.com/compatible-mode/v1"
     openai_model_id: str = "qwen3.7-max"
+    embedding_model_name: str= "text-embedding-v4"
+    db_path: str = "vec.db"
+    table: str="knowledge_base"
+    md5_path: str="md5.text"
 
     # 日志配置
     log_level: str = "INFO"
