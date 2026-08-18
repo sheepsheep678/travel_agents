@@ -71,17 +71,22 @@ def _build_planner_state(req: TripRequest) -> dict:
         "preferences": req.preferences or [],
         "free_text_input": req.free_text_input or "",
         # 以下字段由 Agent 各节点填充/消费，先置默认值
+        "attraction_names": set(),
         "attractions_raw": "",
         "attractions_result": [],
+        "search_round":0,
         "meal_result": [],
         "weather_result": [],
         "hotel_anchors": [],
         "hotels_raw": "",
         "hotel_result": [],
+        "hotel_round": 0,
         "route_result": None,
         "day_route_locations": [],
         "final_plan": None,
         "parse_error": [],
+        "rag_result": "",
+        "rag_attraction_names": set(),
         "messages": [],
     }
 

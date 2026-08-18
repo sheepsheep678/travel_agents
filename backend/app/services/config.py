@@ -47,7 +47,7 @@ class Settings(BaseSettings):
     embedding_model_name: str= "text-embedding-v4"
     db_path: str = "vec.db"
     table: str="knowledge_base"
-    md5_path: str="md5.text"
+    md5_path: str= "../api/md5.text"
 
     # 日志配置
     log_level: str = "INFO"
