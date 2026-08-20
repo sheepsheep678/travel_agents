@@ -27,6 +27,18 @@ def _add_list(existing: Optional[List[Any]], new: Optional[List[Any]]) -> List[A
 def _add_set(existing: Optional[set], new: Optional[set]) -> set:
     return (existing or set()) | set(new or [])
 
+
+# 图节点 → 前端进度文案
+_NODE_LABELS = {
+    "attraction_tool_node": "正在搜索景点...",
+    "attraction_enrich_node": "正在整合景点数据...",
+    "rag_info_node": "正在检索本地知识库...",
+    "weather_tool_node": "正在查询天气...",
+    "hotel_tool_node": "正在搜索推荐酒店...",
+    "hotel_enrich_node": "正在整合酒店数据...",
+    "plan_node": "正在生成行程计划...",
+}
+
 # 图的状态
 class PlannerState(TypedDict):
     city: str
@@ -328,7 +340,7 @@ POI详情数据:
             )
             rag_attraction_result = await self.llm.ainvoke([
                 {"role": "system", "content": "请根据本地知识库搜索到的结果，提取涉及到的景点名称，并用逗号分隔。"},
-                {"role": "user", "content": f"结果：{context}\n请提取结果中包含的景点信息，格式例如：景点1，景点2，景点3。"}
+                {"role": "user", "content": f"结果：{context}\n请提取结果中包含的景点信息，景点数量不要超过20个，根据欢迎程度排序，格式例如：景点1，景点2，景点3。"}
             ])
             rag_names_raw = rag_attraction_result.content if hasattr(rag_attraction_result, "content") else ""
             rag_names = {n.strip() for n in re.split(r"[,，、;；\s]+", rag_names_raw) if n.strip()}
@@ -670,12 +682,23 @@ POI详情数据:
                  "content": "你是资深旅行规划师，擅长制定路线合理、数据严谨的旅行计划，绝不编造景点、酒店或坐标。"},
                 {"role": "user", "content": plan_prompt}
             ])
-            # LLM 偶发返回空计划(days/routes 为空)，重试一次
-            if not result.days or not result.day_routes:
-                print("[规划Agent] 首次返回空计划，重试一次...")
+            def _plan_invalid(p: PlannerOutput) -> bool:
+                """days/routes 为空，或存在某天未选任何景点 → 需重试"""
+                if not p.days or not p.day_routes:
+                    return True
+                return any(not d.attraction_names for d in p.days)
+
+            # LLM 偶发返回空计划或空景点日(attraction_names=[])，额外重试最多 2 次
+            retry_msgs = [
+                "你是资深旅行规划师，擅长制定路线合理、数据严谨的旅行计划，绝不编造景点、酒店或坐标。注意：days 与 day_routes 必须非空且与旅行天数一致；每天 attraction_names 必须从候选景点中至少挑选1个，禁止返回空列表。",
+                "上次输出不合法：每天 attraction_names 必须非空、逐字取自候选景点名称（候选不足时能选几个选几个，不能为空）；day_routes 与天数一致。请重新生成完整计划。",
+            ]
+            for retry_msg in retry_msgs:
+                if not _plan_invalid(result):
+                    break
+                print("[规划Agent] 存在空计划/空景点日，重试...")
                 result = await structured_llm.ainvoke([
-                    {"role": "system",
-                     "content": "你是资深旅行规划师，擅长制定路线合理、数据严谨的旅行计划，绝不编造景点、酒店或坐标。注意：days 与 day_routes 必须非空且与旅行天数一致，禁止返回空列表。"},
+                    {"role": "system", "content": retry_msg},
                     {"role": "user", "content": plan_prompt}
                 ])
 
@@ -706,6 +729,30 @@ POI详情数据:
                     attractions=day_attractions,
                     meals=b.meals,
                 ))
+
+            # 兜底：重试后仍有空景点日 → 用候选景点确定性填充，保证前端不出现空景点。
+            # 优先匹配当日 description 里提到的候选名称（与行程描述保持一致），再按评分兜底。
+            used = {a.name for d in days for a in d.attractions}
+            filled_days = 0
+            for d in days:
+                if d.attractions:
+                    continue
+                desc = d.description or ""
+                pool = [a for n, a in attractions_by_name.items()
+                        if a.name not in used and n and n in desc]
+                if not pool:
+                    pool = sorted(
+                        (a for a in attractions_by_name.values() if a.name not in used),
+                        key=lambda a: (a.rating or 0), reverse=True,
+                    )
+                if pool:
+                    pick = pool[0]
+                    used.add(pick.name)
+                    d.attractions.append(pick)
+                    filled_days += 1
+                    print(f"[规划Agent] 第{d.day_index}天景点为空，确定性回填「{pick.name}」")
+            if filled_days:
+                print(f"[规划Agent] 共确定性回填 {filled_days} 个空景点日")
 
             day_route_locations = [[r.start_name, r.end_name] for r in result.day_routes]
             if not days or not day_route_locations:
@@ -759,12 +806,12 @@ POI详情数据:
         work_flow=StateGraph(PlannerState)
 
         work_flow.add_node("attraction_tool_node", attraction_tool_node)
-        work_flow.add_node("attraction_enrich_node", attraction_enrich_node, retry_policy=RetryPolicy(max_retries=3))
-        work_flow.add_node("rag_info_node", rag_info_node, retry_policy=RetryPolicy(max_retries=3))
+        work_flow.add_node("attraction_enrich_node", attraction_enrich_node, retry_policy=RetryPolicy(max_attempts=3))
+        work_flow.add_node("rag_info_node", rag_info_node, retry_policy=RetryPolicy(max_attempts=3))
         work_flow.add_node("weather_tool_node", weather_tool_node)
         work_flow.add_node("hotel_tool_node", hotel_tool_node)
         work_flow.add_node("hotel_enrich_node", hotel_enrich_node)
-        work_flow.add_node("plan_node", plan_node, retry_policy=RetryPolicy(max_retries=3))
+        work_flow.add_node("plan_node", plan_node, retry_policy=RetryPolicy(max_attempts=3))
 
         work_flow.add_edge(START, "attraction_tool_node")
         work_flow.add_edge(START, "weather_tool_node")
@@ -791,6 +838,74 @@ POI详情数据:
             self._build_planner_graph()
 
         return await self.graph.ainvoke(state)
+
+    async def stream_events(self, state: PlannerState):
+        """基于 astream_events 的实时进度事件流（供 SSE 端点推送给前端）
+
+        事件协议（前端据此解析）：
+            {"type": "node_start", "node": "...", "label": "..."}
+            {"type": "node_end",   "node": "...", "payload": {...}}
+            {"type": "node_error", "node": "...", "message": "...", "retry": true}
+            {"type": "done",       "success": true/false, "message": "...", "data": TripPlan|None}
+        """
+        if self.graph is None:
+            self._build_planner_graph()
+
+        final_plan = None
+        parse_errors = []
+        try:
+            async for ev in self.graph.astream_events(state, version="v2"):
+                name = ev.get("name") or ""
+                etype = ev.get("event") or ""
+
+                # 只保留 7 个图节点本身的 chain 事件，滤掉 LLM/tool/checkpoint 噪音
+                if name not in _NODE_LABELS or etype not in (
+                        "on_chain_start", "on_chain_end", "on_chain_error"):
+                    continue
+
+                if etype == "on_chain_start":
+                    yield {"type": "node_start", "node": name, "label": _NODE_LABELS[name]}
+                elif etype == "on_chain_end":
+                    output = (ev.get("data") or {}).get("output") or {}
+                    # 汇总节点返回的错误信息（最终失败时提示用户）
+                    for err in output.get("parse_error") or []:
+                        msg = getattr(err, "message", None) or ""
+                        if msg:
+                            parse_errors.append(msg)
+                    yield {"type": "node_end", "node": name,
+                           "payload": self._node_end_payload(name, output)}
+                    # plan_node 可能被多次激活（超步不一致时返回空跳过），取最后非空计划
+                    if name == "plan_node" and output.get("final_plan") is not None:
+                        final_plan = output["final_plan"]
+                else:  # on_chain_error：带重试策略的节点会再次启动
+                    error = (ev.get("data") or {}).get("error") or "未知错误"
+                    yield {"type": "node_error", "node": name,
+                           "message": str(error)[:200], "retry": True}
+        except Exception as e:
+            print(f"[流式] 图执行异常: {e}")
+            yield {"type": "done", "success": False,
+                   "message": f"旅行规划执行失败: {e}", "data": None}
+            return
+
+        if final_plan is not None:
+            yield {"type": "done", "success": True, "message": "生成成功",
+                   "data": final_plan.model_dump(mode="json")}
+        else:
+            msg = "；".join(parse_errors) or "未生成旅行计划，请稍后重试"
+            yield {"type": "done", "success": False, "message": msg, "data": None}
+
+    @staticmethod
+    def _node_end_payload(name: str, output: dict) -> dict:
+        """从节点返回值提取轻量进度信息（避免整包序列化 state）"""
+        if name == "attraction_enrich_node":
+            return {"attraction_count": len(output.get("attractions_result") or [])}
+        if name == "hotel_enrich_node":
+            return {"hotel_count": len(output.get("hotel_result") or [])}
+        if name == "weather_tool_node":
+            return {"weather_count": len(output.get("weather_result") or [])}
+        if name == "attraction_tool_node":
+            return {"new_names": len(output.get("attraction_names") or set())}
+        return {}
 
 
 

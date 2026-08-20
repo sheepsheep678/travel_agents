@@ -139,21 +139,29 @@
           <div class="progress-view">
             <div class="progress-icon breathe">🧭</div>
             <h2 class="progress-title">正在为你规划旅行…</h2>
-            <p class="progress-hint">多智能体正在并行检索真实数据，通常需要 30 秒～5 分钟，请耐心等待</p>
+
+            <div class="status-line" v-if="progress.current">
+              <a-spin :spinning="true" :size="'small'" />
+              <span>{{ progress.current }}</span>
+            </div>
 
             <div class="steps">
               <div
-                v-for="(s, i) in progressSteps"
+                v-for="(s, i) in steps"
                 :key="s.label"
                 class="step"
                 :class="{
-                  done: progress.step > i,
-                  active: progress.step === i,
+                  done: progress.stepDone[i],
+                  active: !progress.stepDone[i] && isNodeInStep(progress.currentNode, i),
                 }"
               >
                 <div class="step-ic">
-                  <a-spin v-if="progress.step === i" :spinning="true" :size="'small'" />
-                  <span v-else-if="progress.step > i">✅</span>
+                  <a-spin
+                    v-if="!progress.stepDone[i] && isNodeInStep(progress.currentNode, i)"
+                    :spinning="true"
+                    :size="'small'"
+                  />
+                  <span v-else-if="progress.stepDone[i]">✅</span>
                   <span v-else>{{ s.icon }}</span>
                 </div>
                 <span class="step-label">{{ s.label }}</span>
@@ -166,6 +174,12 @@
               :show-info="false"
               class="progress-bar"
             />
+
+            <div class="progress-log" v-if="logs.length">
+              <div v-for="(l, i) in logs" :key="i" class="log-line" :class="l.level">
+                <span class="log-dot"></span>{{ l.text }}
+              </div>
+            </div>
 
             <div class="progress-actions">
               <a-button type="text" danger @click="cancel" :disabled="!allowCancel">
@@ -184,9 +198,9 @@ import { reactive, ref, onUnmounted } from 'vue'
 import { useRouter } from 'vue-router'
 import { message } from 'ant-design-vue'
 import dayjs, { type Dayjs } from 'dayjs'
-import { generateTripPlan } from '../services/api'
+import { streamTripPlan } from '../services/api'
 import { tripStore } from '../store'
-import type { TripRequest } from '../types'
+import type { TripRequest, StreamEvent } from '../types'
 
 const router = useRouter()
 
@@ -214,20 +228,87 @@ const form = reactive<{
   free_text_input: '希望氛围浪漫轻松、慢节奏',
 })
 
-// ------- 进度状态 -------
-const progressSteps = [
-  { icon: '🔍', label: '正在搜索景点...', percent: 25 },
-  { icon: '🌤️', label: '正在查询天气...', percent: 50 },
-  { icon: '🏨', label: '正在推荐酒店...', percent: 75 },
-  { icon: '📋', label: '正在生成行程计划...', percent: 90 },
+// ------- 进度状态（由后端 SSE 流事件驱动，替代原来的定时假推进） -------
+// 图节点 → 4 步 UI 映射
+const steps = [
+  { icon: '🔍', label: '搜索景点', nodes: ['attraction_tool_node', 'attraction_enrich_node', 'rag_info_node'] },
+  { icon: '🌤️', label: '查询天气', nodes: ['weather_tool_node'] },
+  { icon: '🏨', label: '推荐酒店', nodes: ['hotel_tool_node', 'hotel_enrich_node'] },
+  { icon: '📋', label: '生成计划', nodes: ['plan_node'] },
 ]
+
+// 节点完成里程碑 → 进度百分比（图是并行 + 补搜循环，用"里程碑权重"近似）
+const nodeMilestones: { node: string; pct: number }[] = [
+  { node: 'attraction_tool_node', pct: 10 },
+  { node: 'rag_info_node', pct: 25 },
+  { node: 'weather_tool_node', pct: 35 },
+  { node: 'attraction_enrich_node', pct: 50 },
+  { node: 'hotel_tool_node', pct: 65 },
+  { node: 'hotel_enrich_node', pct: 78 },
+  { node: 'plan_node', pct: 90 },
+]
+
+// 节点实时状态文案
+const nodeLabels: Record<string, string> = {
+  attraction_tool_node: '正在搜索景点...',
+  attraction_enrich_node: '正在整合景点数据...',
+  rag_info_node: '正在检索本地知识库...',
+  weather_tool_node: '正在查询天气...',
+  hotel_tool_node: '正在搜索推荐酒店...',
+  hotel_enrich_node: '正在整合酒店数据...',
+  plan_node: '正在生成行程计划...',
+}
 
 const generating = ref(false)
 const allowCancel = ref(false)
 const cancelled = ref(false)
-const progress = reactive({ step: 0, percent: 0 })
-let stepTimer: number | null = null
+const progress = reactive<{ percent: number; current: string; currentNode: string; stepDone: boolean[] }>({
+  percent: 0,
+  current: '',
+  currentNode: '',
+  stepDone: [false, false, false, false],
+})
+const logs = ref<{ level: 'info' | 'warn' | 'success'; text: string }[]>([])
+const nodeDone = new Set<string>()
 let abortCtrl: AbortController | null = null
+
+function isNodeInStep(node: string, stepIndex: number): boolean {
+  return !!node && steps[stepIndex].nodes.includes(node)
+}
+
+function pushLog(level: 'info' | 'warn' | 'success', text: string) {
+  logs.value.push({ level, text })
+  if (logs.value.length > 60) logs.value.shift()
+}
+
+function onStreamEvent(ev: StreamEvent) {
+  switch (ev.type) {
+    case 'node_start':
+      progress.currentNode = ev.node
+      progress.current = ev.label || nodeLabels[ev.node] || ev.node
+      pushLog('info', progress.current)
+      break
+    case 'node_end': {
+      nodeDone.add(ev.node)
+      // 该节点所属步骤是否全部完成
+      steps.forEach((s, i) => {
+        if (s.nodes.includes(ev.node) && s.nodes.every((n) => nodeDone.has(n))) {
+          progress.stepDone[i] = true
+        }
+      })
+      // 里程碑推进百分比
+      for (const m of nodeMilestones) {
+        if (m.node === ev.node) progress.percent = m.pct
+      }
+      break
+    }
+    case 'node_error':
+      pushLog('warn', `${nodeLabels[ev.node] || ev.node} 出错，正在重试…`)
+      break
+    case 'done':
+      break // 在 onSubmit 中统一处理
+  }
+}
 
 async function onSubmit() {
   if (!form.city || !form.dates) return
@@ -246,36 +327,35 @@ async function onSubmit() {
   generating.value = true
   allowCancel.value = true
   cancelled.value = false
-  progress.step = 0
   progress.percent = 0
+  progress.current = ''
+  progress.currentNode = ''
+  progress.stepDone = [false, false, false, false]
+  nodeDone.clear()
+  logs.value = []
   abortCtrl = new AbortController()
 
-  // 模拟分阶段进度：约每 1.6s 前进一阶段，到 90% 后循环呼吸等待
-  stepTimer = window.setInterval(() => {
-    if (progress.step < progressSteps.length - 1) {
-      progress.step += 1
-      progress.percent = progressSteps[progress.step].percent
-    } else {
-      progress.percent = 90
-    }
-  }, 1600)
-
   try {
-    const resp = await generateTripPlan(req, abortCtrl.signal)
-    if (cancelled.value) return // 用户已取消，忽略结果
-    if (!resp.success) {
-      message.error(resp.message || '生成失败，请稍后重试')
-      reset()
-      return
+    for await (const ev of streamTripPlan(req, abortCtrl.signal)) {
+      if (cancelled.value) return // 用户已取消，忽略后续事件
+      onStreamEvent(ev)
+      if (ev.type === 'done') {
+        if (!ev.success) {
+          message.error(ev.message || '生成失败，请稍后重试')
+          reset()
+          return
+        }
+        progress.percent = 100
+        tripStore.plan = ev.data ?? null
+        pushLog('success', '行程规划完成！')
+        message.success('行程规划完成！')
+        // 稍作停留展示 100% 后再跳转
+        window.setTimeout(() => router.push('/result'), 600)
+        return
+      }
     }
-    progress.percent = 100
-    progress.step = progressSteps.length - 1
-    tripStore.plan = resp.data ?? null
-    message.success('行程规划完成！')
-    // 稍作停留展示 100% 后再跳转
-    window.setTimeout(() => router.push('/result'), 600)
   } catch (e: any) {
-    if (e?.code !== 'ERR_CANCELED' && !cancelled.value) {
+    if (e?.name !== 'AbortError' && !cancelled.value) {
       message.error('请求失败：' + (e?.message || '网络异常，请重试'))
     }
     reset()
@@ -290,14 +370,14 @@ function cancel() {
 }
 
 function reset() {
-  if (stepTimer) window.clearInterval(stepTimer)
-  stepTimer = null
   generating.value = false
   allowCancel.value = false
+  progress.current = ''
+  progress.currentNode = ''
 }
 
 onUnmounted(() => {
-  if (stepTimer) window.clearInterval(stepTimer)
+  abortCtrl?.abort()
 })
 </script>
 
@@ -517,6 +597,49 @@ onUnmounted(() => {
 
 .progress-bar { margin: 6px 0 10px; }
 .progress-actions { margin-top: 8px; }
+
+.status-line {
+  margin-top: 10px;
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 16px;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.08);
+  border: 1px solid rgba(255, 255, 255, 0.15);
+  font-size: 13px;
+  color: rgba(255, 255, 255, 0.9);
+}
+.progress-log {
+  margin: 10px 0 6px;
+  max-height: 120px;
+  overflow-y: auto;
+  text-align: left;
+  background: rgba(0, 0, 0, 0.18);
+  border-radius: 10px;
+  padding: 10px 14px;
+  font-size: 12px;
+}
+.log-line {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 2px 0;
+  color: rgba(255, 255, 255, 0.65);
+  font-family: 'SFMono-Regular', Consolas, 'Liberation Mono', Menlo, monospace;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.log-line.warn { color: #ffb703; }
+.log-line.success { color: #43f0c5; }
+.log-dot {
+  width: 6px; height: 6px; border-radius: 50%;
+  background: rgba(255, 255, 255, 0.35);
+  flex-shrink: 0;
+}
+.log-line.warn .log-dot { background: #ffb703; }
+.log-line.success .log-dot { background: #43f0c5; }
 .progress-actions :deep(.ant-btn) { color: rgba(255, 255, 255, 0.6); }
 
 @media (max-width: 960px) {

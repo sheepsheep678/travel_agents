@@ -84,6 +84,13 @@ export interface TripPlanResponse {
   data?: TripPlan | null
 }
 
+/** SSE 流式事件（与后端 travel_plan_agent.stream_events 协议一致） */
+export type StreamEvent =
+  | { type: 'node_start'; node: string; label: string }
+  | { type: 'node_end'; node: string; payload: Record<string, unknown> }
+  | { type: 'node_error'; node: string; message: string; retry?: boolean }
+  | { type: 'done'; success: boolean; message: string; data?: TripPlan | null }
+
 export interface TripRequest {
   city: string
   start_date: string
