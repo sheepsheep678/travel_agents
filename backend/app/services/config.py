@@ -45,9 +45,11 @@ class Settings(BaseSettings):
     openai_base_url: str = "https://dashscope.aliyuncs.com/compatible-mode/v1"
     openai_model_id: str = "qwen3.7-max"
     embedding_model_name: str= "text-embedding-v4"
-    db_path: str = "vec.db"
+    db_path: str="D:/java/code/PyCharm/Travel-agents/backend/app/api/vec.db"
+    # 数据表名称
     table: str="knowledge_base"
-    md5_path: str= "../api/md5.text"
+    # MD5文件路径
+    md5_path: str="D:/java/code/PyCharm/Travel-agents/backend/app/api/md5.text"
 
     # 日志配置
     log_level: str = "INFO"

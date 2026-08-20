@@ -323,6 +323,7 @@ let map: any = null
 let AMapCtor: any = null
 let infoWindow: any = null
 let markers: any[] = []
+let polylines: any[] = []
 
 async function initMap() {
   const key = import.meta.env.VITE_AMAP_WEB_JS_KEY
@@ -363,10 +364,13 @@ function renderMarkers() {
   if (!map) return
   markers.forEach((m) => map.remove(m))
   markers = []
+  polylines.forEach((p) => map.remove(p))
+  polylines = []
 
   let anyPoi = false
   days.forEach((day, di) => {
     const color = dayColor(di)
+    const dayPath: number[][] = []
 
     // 酒店 marker（当日推荐住宿）
     const h = day.hotel
@@ -396,6 +400,7 @@ function renderMarkers() {
     // 景点 marker（按天着色 + 编号）
     day.attractions.forEach((a: Attraction, ai) => {
       if (!a.location || typeof a.location.longitude !== 'number') return
+      dayPath.push([a.location.longitude, a.location.latitude])
       anyPoi = true
       const marker = new AMapCtor.Marker({
         position: [a.location.longitude, a.location.latitude],
@@ -445,6 +450,22 @@ function renderMarkers() {
       markers.push(marker)
       map.add(marker)
     })
+
+    // 当天景点连线：按行程顺序连接景点（只连景点，不含酒店/餐饮），虚线带方向箭头
+    if (dayPath.length >= 2) {
+      const line = new AMapCtor.Polyline({
+        path: dayPath,
+        strokeColor: color,
+        strokeWeight: 4,
+        strokeOpacity: 0.75,
+        strokeStyle: 'dashed',
+        lineJoin: 'round',
+        showDir: true,
+        zIndex: 50,
+      })
+      map.add(line)
+      polylines.push(line)
+    }
   })
 
   if (anyPoi && markers.length) map.setFitView(markers, false, [60, 60, 60, 60])
