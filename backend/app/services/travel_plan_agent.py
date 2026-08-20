@@ -7,6 +7,7 @@ from typing import TypedDict, List, Optional, Annotated, Any, Sequence, Literal
 from langchain_core.messages import BaseMessage
 from langgraph.constants import START, END
 from langgraph.graph import add_messages, StateGraph
+from langgraph.types import RetryPolicy
 from pydantic import BaseModel, Field
 
 from backend.app.models.response import Attraction, WeatherInfo, Hotel, \
@@ -758,12 +759,12 @@ POI详情数据:
         work_flow=StateGraph(PlannerState)
 
         work_flow.add_node("attraction_tool_node", attraction_tool_node)
-        work_flow.add_node("attraction_enrich_node", attraction_enrich_node)
-        work_flow.add_node("rag_info_node", rag_info_node)
+        work_flow.add_node("attraction_enrich_node", attraction_enrich_node, retry_policy=RetryPolicy(max_retries=3))
+        work_flow.add_node("rag_info_node", rag_info_node, retry_policy=RetryPolicy(max_retries=3))
         work_flow.add_node("weather_tool_node", weather_tool_node)
         work_flow.add_node("hotel_tool_node", hotel_tool_node)
         work_flow.add_node("hotel_enrich_node", hotel_enrich_node)
-        work_flow.add_node("plan_node", plan_node)
+        work_flow.add_node("plan_node", plan_node, retry_policy=RetryPolicy(max_retries=3))
 
         work_flow.add_edge(START, "attraction_tool_node")
         work_flow.add_edge(START, "weather_tool_node")
@@ -803,8 +804,8 @@ def get_travel_plan_agent():
 if __name__ == "__main__":
     state = {
         "city": "青岛",
-        "start_date": "2026-8-18",
-        "end_date": "2026-8-20",
+        "start_date": "2026-8-20",
+        "end_date": "2026-8-22",
         "travel_days": 3,
         "transportation": "自驾",
         "accommodation": "酒店",
