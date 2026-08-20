@@ -340,7 +340,7 @@ POI详情数据:
             )
             rag_attraction_result = await self.llm.ainvoke([
                 {"role": "system", "content": "请根据本地知识库搜索到的结果，提取涉及到的景点名称，并用逗号分隔。"},
-                {"role": "user", "content": f"结果：{context}\n请提取结果中包含的景点信息，景点数量不要超过20个，根据欢迎程度排序，格式例如：景点1，景点2，景点3。"}
+                {"role": "user", "content": f"结果：{context}\n请提取结果中包含的景点信息，根据欢迎程度排序，格式例如：景点1，景点2，景点3。"}
             ])
             rag_names_raw = rag_attraction_result.content if hasattr(rag_attraction_result, "content") else ""
             rag_names = {n.strip() for n in re.split(r"[,，、;；\s]+", rag_names_raw) if n.strip()}
