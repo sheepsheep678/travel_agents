@@ -37,7 +37,11 @@ _NODE_LABELS = {
     "hotel_tool_node": "正在搜索推荐酒店...",
     "hotel_enrich_node": "正在整合酒店数据...",
     "plan_node": "正在生成行程计划...",
+    "evaluation_node": "正在评估行程合理性...",
 }
+
+# 评估节点最多打回重规划的轮次（防止反思循环死锁）
+MAX_EVAL_ROUNDS = 2
 
 # 图的状态
 class PlannerState(TypedDict):
@@ -62,6 +66,10 @@ class PlannerState(TypedDict):
     route_result: Optional[RouteInfo]
     day_route_locations: List[List[str]]
     final_plan: Optional[TripPlan]
+    history_plan: Annotated[List[TripPlan], _add_list]
+    eval_round: int
+    eval_feedback: str
+    eval_passed: bool
     parse_error: Annotated[list[ErrorResponse], _add_list]
     rag_result: str
     rag_attraction_names: Annotated[set[str], _add_set]
@@ -627,6 +635,27 @@ POI详情数据:
                 overall_suggestions: str
                 budget: Optional[Budget] = None
 
+            # 修订模式：上一版计划被评估节点打回时，注入历史计划与评估反馈
+            history_plans = state.get("history_plan", [])
+            eval_feedback = state.get("eval_feedback", "")
+            revision_block = ""
+            if history_plans and eval_feedback:
+                last_plan = history_plans[-1]
+                last_brief = [
+                    {"day_index": d.day_index,
+                     "attraction_names": [a.name for a in d.attractions],
+                     "hotel_name": d.hotel.name if d.hotel else ""}
+                    for d in last_plan.days
+                ]
+                revision_block = f"""
+               【修订模式】上一版计划(第{len(history_plans)}版)未通过合理性评估，请针对以下反馈逐条修复后重新生成：
+               评估反馈:
+               {eval_feedback}
+
+               上一版计划要点(仅供参考，避免重复同样问题，不要原样照搬):
+               {json.dumps(last_brief, ensure_ascii=False)}
+               """
+
             plan_prompt = f"""你是资深旅行规划师。请根据以下数据为游客制定一份完整的{state['city']}旅行计划。
 
     基本信息:
@@ -650,6 +679,8 @@ POI详情数据:
     
     本地知识库推荐攻略:
     {state['rag_result']}
+    
+    {revision_block}
 
     错误信息：
     {json.dumps([e.model_dump() for e in state.get("parse_error", [])], ensure_ascii=False)}
@@ -668,6 +699,8 @@ POI详情数据:
     10. overall_suggestions: 结合天气与偏好给出总体出行建议
     11.本地知识库推荐攻略是精心查找的必玩攻略，大部分都是城市的特色，但是可以根据用户偏好自行取舍
     12.不要安排过多的相似特征的景点，用户会审美疲劳；尽量多样化，确保行程丰富有趣
+    13.如处于修订模式，必须优先解决评估反馈中指出的全部问题
+
 
     day_routes 要求(共{travel_days}条，与每天一一对应):
     1. start_name: 当日路线起点名称。第1天取所选酒店的名称；之后每天取前一天最后一个景点的名称
@@ -781,6 +814,111 @@ POI详情数据:
                     "day_route_locations": day_route_locations,
                 }
 
+        # 评估节点：确定性校验 + LLM评估，判断计划合理性
+        async def evaluation_node(state: PlannerState):
+            plan = state.get("final_plan")
+            if plan is None:
+                print("[评估Agent] 无最终计划，跳过评估")
+                return {}
+
+            travel_days = state.get("travel_days") or 1
+            hotels = state.get("hotel_result", [])
+            routes = state.get("day_route_locations") or []
+
+            # ---- 第一步：确定性强校验（命中任一即判不通过） ----
+            hard_issues = []
+            if len(plan.days) != travel_days:
+                hard_issues.append(f"行程天数为{len(plan.days)}天，与要求的{travel_days}天不符")
+            for d in plan.days:
+                if not d.attractions:
+                    hard_issues.append(f"第{d.day_index}天未安排任何景点")
+                total_minutes = sum(a.visit_duration or 0 for a in d.attractions)
+                if total_minutes > 480:
+                    hard_issues.append(f"第{d.day_index}天游览总时长{total_minutes}分钟，超过480分钟上限")
+                if hotels and d.hotel is None:
+                    hard_issues.append(f"第{d.day_index}天缺少酒店安排")
+
+
+            # ---- 第二步：LLM合理性评估 ----
+            class EvalOutput(BaseModel):
+                passed: bool = Field(..., description="计划是否通过合理性评估")
+                score: int = Field(..., description="综合评分0-100")
+                issues: List[str] = Field(default_factory=list, description="发现的具体问题")
+                suggestions: List[str] = Field(default_factory=list, description="针对性改进建议")
+
+            plan_brief = [
+                {"day_index": d.day_index, "date": d.date,
+                 "attractions": [a.name for a in d.attractions],
+                 "hotel": d.hotel.name if d.hotel else "",
+                 "transportation": d.transportation,
+                 "description": d.description,
+                 "meals": [m.name for m in d.meals]}
+                for d in plan.days
+            ]
+            eval_prompt = f"""请评估以下{state['city']}旅行计划的合理性，给出是否通过的结论与具体意见。
+
+       基本信息: 共{travel_days}天({state['start_date']}~{state['end_date']})，大交通: {state.get('transportation', '')}，
+       住宿偏好: {state.get('accommodation', '')}，用户偏好: {state.get('preferences', [])}，
+       额外需求: {state.get('free_text_input', '') or '无'}
+
+       天气数据:
+       {json.dumps([w.model_dump() for w in state.get("weather_result", [])], ensure_ascii=False)}
+
+       待评估计划:
+       {json.dumps(plan_brief, ensure_ascii=False)}
+
+       系统已检出的硬性问题(无需重复检查):
+       {json.dumps(hard_issues, ensure_ascii=False)}
+
+       评估维度:
+       1. 同一天景点地理上是否顺路，类别是否过度雷同(审美疲劳)
+       2. 节奏是否合理(单日景点数量、描述与景点是否匹配)
+       3. 天气适配(雨天是否仍安排大量户外景点)
+       4. 三餐安排与预算是否符合逻辑
+       5. 整体是否响应用户偏好与额外需求
+       注意: 景点/酒店/路线详情已保存在系统中，只评估计划编排本身，不要臆测不存在的数据。"""
+
+            print("[评估Agent] LLM评估行程合理性中...")
+            structured_llm = self.llm.with_structured_output(EvalOutput)
+            eval_result = await structured_llm.ainvoke([
+                {"role": "system",
+                 "content": "你是严格的旅行计划评审专家，只依据给定数据判断合理性，不编造问题也不放过硬伤。"},
+                {"role": "user", "content": eval_prompt}
+            ])
+
+            # 硬性问题一票否决；无硬性问题时以LLM结论为准
+            passed = (not hard_issues) and eval_result.passed
+            feedback_items = hard_issues + eval_result.issues + [
+                f"[建议] {s}" for s in eval_result.suggestions
+            ]
+            feedback = "\n".join(f"- {item}" for item in feedback_items)
+
+            print(f"[评估Agent] 第{state.get('eval_round', 0) + 1}轮评估: "
+                  f"score={eval_result.score}, passed={passed}, 问题数={len(feedback_items)}")
+
+            return {
+                "eval_round": state.get("eval_round", 0) + 1,
+                "eval_passed": passed,
+                "eval_feedback": feedback,
+                # 被驳回的计划归档为历史，供 plan_node 修订参考
+                "history_plan": [] if passed else [plan],
+            }
+
+        def evaluation_router(state: PlannerState) -> Literal["plan_node", "end"]:
+            """评估通过/无计划/达到重规划上限 → 结束；否则打回 plan_node 修订"""
+            if state.get("final_plan") is None:
+                print("[评估路由] 无最终计划，直接结束")
+                return "end"
+            if state.get("eval_passed"):
+                print("[评估路由] 计划通过评估，结束")
+                return "end"
+            if state.get("eval_round", 0) >= MAX_EVAL_ROUNDS:
+                print(f"[评估路由] 已达最大评估轮次({MAX_EVAL_ROUNDS})，强制放行当前计划")
+                return "end"
+            print("[评估路由] 计划未通过评估，打回 plan_node 修订")
+            return "plan_node"
+
+
         def rag_attraction_node_router(state: PlannerState) -> Literal["plan_node", "attraction_tool_node"]:
             """判断 RAG 景点名称是否全部被搜索到的景点覆盖：
             有任一缺失 → attraction_tool_node 补搜；全部包含 → plan_node 直接规划"""
@@ -812,6 +950,7 @@ POI详情数据:
         work_flow.add_node("hotel_tool_node", hotel_tool_node)
         work_flow.add_node("hotel_enrich_node", hotel_enrich_node)
         work_flow.add_node("plan_node", plan_node, retry_policy=RetryPolicy(max_attempts=3))
+        work_flow.add_node("evaluation_node", evaluation_node, retry_policy=RetryPolicy(max_attempts=3))
 
         work_flow.add_edge(START, "attraction_tool_node")
         work_flow.add_edge(START, "weather_tool_node")
@@ -826,7 +965,12 @@ POI详情数据:
         work_flow.add_edge("hotel_tool_node", "hotel_enrich_node")
         work_flow.add_edge("hotel_enrich_node", "plan_node")
         work_flow.add_edge("weather_tool_node", "plan_node")
-        work_flow.add_edge("plan_node", END)
+        work_flow.add_edge("plan_node", "evaluation_node")
+        work_flow.add_conditional_edges(
+            "evaluation_node",
+            evaluation_router,
+            {"plan_node": "plan_node", "end": END},
+        )
 
 
         graph=work_flow.compile()
@@ -905,6 +1049,8 @@ POI详情数据:
             return {"weather_count": len(output.get("weather_result") or [])}
         if name == "attraction_tool_node":
             return {"new_names": len(output.get("attraction_names") or set())}
+        if name == "evaluation_node":
+            return {"passed": output.get("eval_passed"), "round": output.get("eval_round")}
         return {}
 
 
@@ -939,6 +1085,10 @@ if __name__ == "__main__":
         "route_result": None,
         "day_route_locations": [],
         "final_plan": None,
+        "history_plan": [],
+        "eval_round": 0,
+        "eval_feedback": "",
+        "eval_passed": False,
         "parse_error": [],
         "rag_result": "",
         "rag_attraction_names": set(),
