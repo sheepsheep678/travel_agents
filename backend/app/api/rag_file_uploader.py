@@ -103,4 +103,4 @@ def build_from_dir(docs_dir: str):
     return vec_store
 
 if __name__ == "__main__":
-    build_from_dir("data")   # 把你的 txt/pdf 放这个目录
+    build_from_dir("backend/app/api/data")   # 把你的 txt/pdf 放这个目录
