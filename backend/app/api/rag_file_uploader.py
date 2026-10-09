@@ -75,9 +75,14 @@ def build_from_dir(docs_dir: str):
             if check_md5_hex(md5_hex):
                 print(f"跳过: {f}: 已在本地知识库中")
                 continue
-            print(f"加载: {f}")
+            # 城市 = 文件名（不含扩展名），例如 北京.txt → 北京
+            city = os.path.splitext(os.path.basename(f))[0]
+            print(f"加载: {f} (城市: {city})")
             try:
                 docs = load_file(f)
+                for d in docs:
+                    d.metadata["city"] = city
+                # split_documents 会把 metadata 继承给每个 chunk
                 all_docs.extend(splitter.split_documents(docs))
                 pending_md5.append(md5_hex)
             except Exception as e:
@@ -103,4 +108,6 @@ def build_from_dir(docs_dir: str):
     return vec_store
 
 if __name__ == "__main__":
-    build_from_dir("backend/app/api/data")   # 把你的 txt/pdf 放这个目录
+    # 用脚本自身位置定位 data 目录，避免相对路径依赖当前工作目录(CWD)
+    data_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "data")
+    build_from_dir(data_dir)   # 把你的 txt/pdf 放这个目录

@@ -341,13 +341,15 @@ POI详情数据:
                 print("[RAG Agent] 假设文档为空，回退问句检索")
                 answer = query
             print(f"[RAG Agent] 假设文档: {answer}")
-            docs = await aretrieve(answer)
+            docs = await aretrieve(answer, city=state.get("city"))
+            # for d in docs:
+            #     print(f"[RAG Agent] 知识库文档: {d.page_content}")
             context = "\n\n".join(
                 f"[来源:{d.metadata.get('source', 'sheep开发者')}]\n{d.page_content}"
                 for d in docs
             )
             rag_attraction_result = await self.llm.ainvoke([
-                {"role": "system", "content": "请根据本地知识库搜索到的结果，提取涉及到的景点名称，并用逗号分隔。"},
+                {"role": "system", "content": f"请根据本地知识库搜索到的结果，提取涉及到的{state.get('city')}的景点名称，并用逗号分隔。如果结果为空，返回'未检索到相关内容。'。"},
                 {"role": "user", "content": f"结果：{context}\n请提取结果中包含的景点信息，根据欢迎程度排序，格式例如：景点1，景点2，景点3。"}
             ])
             rag_names_raw = rag_attraction_result.content if hasattr(rag_attraction_result, "content") else ""
@@ -579,14 +581,6 @@ POI详情数据:
             weather_list = state.get("weather_result", [])
             rag_result = state.get("rag_result", "")
 
-            if not attractions or not hotels or not weather_list or not rag_result :
-                print("[规划Agent] 上游数据未就绪(提前触发)，跳过本次执行")
-                return {}
-            # RAG景点未被搜索覆盖且补搜尚未执行：跳过，等补搜循环走完再规划
-            if state.get("hotel_round", 0) < state.get("search_round", 0):
-                print(f"[规划Agent] 酒店轮次({state.get('hotel_round', 0)})落后于景点搜索轮次"
-                      f"({state.get('search_round', 0)})，跳过本次执行")
-                return {}
             # 确定性推算每日日期
             travel_days = state.get("travel_days") or 1
             try:
@@ -919,24 +913,44 @@ POI详情数据:
             return "plan_node"
 
 
-        def rag_attraction_node_router(state: PlannerState) -> Literal["plan_node", "attraction_tool_node"]:
+        def rag_attraction_node_router(state: PlannerState) -> Literal["plan_gate_node", "attraction_tool_node"]:
             """判断 RAG 景点名称是否全部被搜索到的景点覆盖：
-            有任一缺失 → attraction_tool_node 补搜；全部包含 → plan_node 直接规划"""
+            有任一缺失 → attraction_tool_node 补搜；全部包含 → plan_gate_node 门控"""
             attraction_names = state.get("attraction_names") or set()
             rag_names = [n.strip() for n in (state.get("rag_attraction_names") or []) if n and n.strip()]
 
             # RAG 未提取到任何景点名（提取失败或知识库无景点）：无需补搜
             if not rag_names:
-                print("[RAG路由] RAG景点名为空，直接进入规划")
-                return "plan_node"
+                print("[RAG路由] RAG景点名为空，进入门控")
+                return "plan_gate_node"
 
             missing = [n for n in rag_names if n not in attraction_names]
             if missing:
                 print(f"[RAG路由] {len(missing)} 个RAG景点未被覆盖，跳转补搜: {missing}")
                 return "attraction_tool_node"
 
-            print("[RAG路由] RAG景点已全部覆盖，直接进入规划")
-            return "plan_node"
+            print("[RAG路由] RAG景点已全部覆盖，进入门控")
+            return "plan_gate_node"
+
+
+        # 门控节点：汇聚三条并行分支，数据齐备才放行规划（替代 plan_node 内空跑守卫）
+        def plan_gate_node(state: PlannerState):
+            return {}
+
+        def plan_gate_router(state: PlannerState) -> Literal["plan_node", "__end__"]:
+            """数据齐备 → plan_node；未齐备 → END（本轮等待，剩余分支完成后会再次触发门控）"""
+            ready = (
+                bool(state.get("attractions_result"))
+                and bool(state.get("hotel_result"))
+                and bool(state.get("weather_result"))
+                and bool(state.get("rag_result"))
+                and state.get("hotel_round", 0) >= state.get("search_round", 0)
+            )
+            if ready:
+                print("[门控] 上游数据齐备，放行规划节点")
+                return "plan_node"
+            print("[门控] 上游数据未齐备，本轮等待（剩余分支完成后将再次触发）")
+            return END
 
 
 
@@ -949,6 +963,7 @@ POI详情数据:
         work_flow.add_node("weather_tool_node", weather_tool_node)
         work_flow.add_node("hotel_tool_node", hotel_tool_node)
         work_flow.add_node("hotel_enrich_node", hotel_enrich_node)
+        work_flow.add_node("plan_gate_node", plan_gate_node)
         work_flow.add_node("plan_node", plan_node, retry_policy=RetryPolicy(max_attempts=3))
         work_flow.add_node("evaluation_node", evaluation_node, retry_policy=RetryPolicy(max_attempts=3))
 
@@ -958,13 +973,18 @@ POI详情数据:
         work_flow.add_conditional_edges(
             "rag_info_node",
             rag_attraction_node_router,
-            {"plan_node": "plan_node", "attraction_tool_node": "attraction_tool_node"},
+            {"plan_gate_node": "plan_gate_node", "attraction_tool_node": "attraction_tool_node"},
         )
         work_flow.add_edge("attraction_tool_node", "attraction_enrich_node")
         work_flow.add_edge("attraction_enrich_node", "hotel_tool_node")
         work_flow.add_edge("hotel_tool_node", "hotel_enrich_node")
-        work_flow.add_edge("hotel_enrich_node", "plan_node")
-        work_flow.add_edge("weather_tool_node", "plan_node")
+        work_flow.add_edge("hotel_enrich_node", "plan_gate_node")
+        work_flow.add_edge("weather_tool_node", "plan_gate_node")
+        work_flow.add_conditional_edges(
+            "plan_gate_node",
+            plan_gate_router,
+            {"plan_node": "plan_node", END: END},
+        )
         work_flow.add_edge("plan_node", "evaluation_node")
         work_flow.add_conditional_edges(
             "evaluation_node",
@@ -1018,7 +1038,7 @@ POI详情数据:
                             parse_errors.append(msg)
                     yield {"type": "node_end", "node": name,
                            "payload": self._node_end_payload(name, output)}
-                    # plan_node 可能被多次激活（超步不一致时返回空跳过），取最后非空计划
+                    # plan_node 经门控放行后仅执行一次；修订循环会再次激活，取最后非空计划
                     if name == "plan_node" and output.get("final_plan") is not None:
                         final_plan = output["final_plan"]
                 else:  # on_chain_error：带重试策略的节点会再次启动

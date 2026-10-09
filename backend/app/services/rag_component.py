@@ -1,5 +1,6 @@
 import asyncio
 import sqlite3
+from typing import Optional
 
 import sqlite_vec
 from langchain_community.vectorstores import SQLiteVec
@@ -18,8 +19,8 @@ def _connect() -> sqlite3.Connection:
     return connection
 
 
-def _sync_search(query: str, k: int):
-    """同步检索：查完立即关闭连接"""
+def _sync_search(query: str, k: int, city: Optional[str] = None):
+    """同步检索：查完立即关闭连接；传入 city 时按 metadata 过滤（SQLiteVec 不支持 SQL 级过滤）"""
     connection = _connect()
     try:
         vec_store = SQLiteVec(
@@ -30,13 +31,16 @@ def _sync_search(query: str, k: int):
         )
         retriever = vec_store.as_retriever(
             search_type="similarity",
-            search_kwargs={"k": k},
+            search_kwargs={"k": k if not city else max(k * 5, 20)},
         )
-        return retriever.invoke(query)
+        docs = retriever.invoke(query)
+        if city:
+            docs = [d for d in docs if (d.metadata or {}).get("city") == city]
+        return docs[:k]
     finally:
         connection.close()
 
 
-async def aretrieve(query: str, k: int = 4):
+async def aretrieve(query: str, k: int = 4, city: Optional[str] = None):
     """异步入口：把同步检索丢到线程池执行，不阻塞事件循环"""
-    return await asyncio.to_thread(_sync_search, query, k)
+    return await asyncio.to_thread(_sync_search, query, k, city)
