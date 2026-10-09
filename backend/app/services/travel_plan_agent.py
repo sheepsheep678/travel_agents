@@ -126,30 +126,32 @@ class travel_plan_agents:
             attr_names = state.get("attraction_names") or set()
             missing = sorted(rag_names - attr_names) if state.get("search_round", 0) > 0 else []
             keyword_list = (state.get("preferences", []) + missing) or ["景点"]
+            search_semaphore = asyncio.Semaphore(3)
+
+            async def search_one(keyword: str):
+                async with search_semaphore:
+                    tool_args = {"keywords": keyword, "city": state["city"]}
+                    try:
+                        search_result = await search_tool.ainvoke(tool_args)
+                        search_data = json.loads(_extract_text(search_result))
+                        return [(poi.get("id"), poi.get("name"), poi)
+                                for poi in search_data.get("pois", [])[:1]]
+                    except (json.JSONDecodeError, TypeError):
+                        print(f"[景点Agent] 关键词「{keyword}」搜索结果解析失败")
+                        return []
+
+            # 并发搜索各关键词，再统一去重合并
+            search_results = await asyncio.gather(*[search_one(kw) for kw in keyword_list])
+
             poi_list = []
             seen_ids = set()
             new_names = set()
-            for keyword in keyword_list:
-                tool_args = {"keywords": keyword, "city": state["city"]}
-                # print(f"[景点Agent]调用工具: {search_tool.name}, 参数: {tool_args}")
-                search_result = await search_tool.ainvoke(tool_args)
-
-                text_content = _extract_text(search_result)
-                try:
-                    search_data = json.loads(text_content)
-                except (json.JSONDecodeError, TypeError):
-                    print(f"[景点Agent] 关键词「{keyword}」搜索结果解析失败")
-                    continue
-
-
-                for poi in search_data.get("pois", [])[:1]:
-                    poi_id = poi.get("id")
-                    name=poi.get("name")
+            for results in search_results:
+                for poi_id, name, poi in results:
                     if poi_id and poi_id not in seen_ids:
                         seen_ids.add(poi_id)
                         new_names.add(name)
                         poi_list.append(poi)
-                # print(f"[景点Agent] 关键词「{keyword}」累计候选POI: {len(poi_list)} 个")
 
             if not poi_list:
                 print("[景点Agent] 未搜索到任何景点")
@@ -469,15 +471,26 @@ POI详情数据:
 
             hotel_ids = list(hotel_pois.keys())
             print(f"[酒店Agent] 获取 {len(hotel_ids)} 个酒店详情中...")
+            hotel_semaphore = asyncio.Semaphore(3)
+
+            async def fetch_hotel_detail(hotel_id: str):
+                async with hotel_semaphore:
+                    result = await detail_tool.ainvoke({"id": hotel_id})
+                    text = _extract_text(result)
+                    if text and not text.startswith("Error"):
+                        return text
+                    return None
+
+            hotel_texts = await asyncio.gather(*[fetch_hotel_detail(hid) for hid in hotel_ids])
+
             hotel_details = []
-            for hotel_id in hotel_ids:
-                result = await detail_tool.ainvoke({"id": hotel_id})
-                text = _extract_text(result)
-                if text and not text.startswith("Error"):
-                    try:
-                        hotel_details.append(json.loads(text))
-                    except json.JSONDecodeError:
-                        return {"parse_error": [ErrorResponse(message="酒店详情数据解析失败")]}
+            for text in hotel_texts:
+                if not text:
+                    continue
+                try:
+                    hotel_details.append(json.loads(text))
+                except json.JSONDecodeError:
+                    return {"parse_error": [ErrorResponse(message="酒店详情数据解析失败")]}
 
             print(f"[酒店Agent] 解析到 {len(hotel_details)} 条酒店详情")
             if not hotel_details:
