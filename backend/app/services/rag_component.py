@@ -5,6 +5,7 @@ from typing import Optional
 import sqlite_vec
 from langchain_community.vectorstores import SQLiteVec
 
+from backend.app.constants import RAG_TOP_K, RAG_OVERSAMPLE_FACTOR, RAG_OVERSAMPLE_MIN
 from backend.app.nodes.llm import get_embedding_model
 from backend.app.services.config import settings
 
@@ -31,7 +32,7 @@ def _sync_search(query: str, k: int, city: Optional[str] = None):
         )
         retriever = vec_store.as_retriever(
             search_type="similarity",
-            search_kwargs={"k": k if not city else max(k * 5, 20)},
+            search_kwargs={"k": k if not city else max(k * RAG_OVERSAMPLE_FACTOR, RAG_OVERSAMPLE_MIN)},
         )
         docs = retriever.invoke(query)
         if city:
@@ -41,6 +42,6 @@ def _sync_search(query: str, k: int, city: Optional[str] = None):
         connection.close()
 
 
-async def aretrieve(query: str, k: int = 4, city: Optional[str] = None):
+async def aretrieve(query: str, k: int = RAG_TOP_K, city: Optional[str] = None):
     """异步入口：把同步检索丢到线程池执行，不阻塞事件循环"""
     return await asyncio.to_thread(_sync_search, query, k, city)

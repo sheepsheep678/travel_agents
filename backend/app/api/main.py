@@ -19,8 +19,9 @@ from pydantic import BaseModel
 
 from backend.app.models.request import TripRequest
 from backend.app.models.response import TripPlanResponse
+from backend.app.state import initial_state
 from backend.app.nodes.tools.amap_mcp_servers import init_amap_mcp_async, close_amap_mcp
-from backend.app.services.config import get_settings
+from backend.app.services.config import settings, validate_config
 from backend.app.services.travel_plan_agent import get_travel_plan_agent
 
 logger = logging.getLogger("travel_plan_api")
@@ -28,6 +29,9 @@ logger = logging.getLogger("travel_plan_api")
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    # 启动校验：缺 AMAP_API_KEY 时按 validate_config 原意 fail-fast
+    validate_config()
+
     # 启动：异步初始化高德 MCP 客户端（避免脚本写法的 asyncio.run 在事件循环内崩溃）
     logger.info("正在初始化高德 MCP 客户端...")
     await init_amap_mcp_async()
@@ -38,7 +42,6 @@ async def lifespan(app: FastAPI):
     logger.info("高德 MCP 客户端已关闭")
 
 
-settings = get_settings()
 app = FastAPI(
     title=settings.app_name,
     version=settings.app_version,
@@ -64,8 +67,9 @@ class HealthResponse(BaseModel):
 
 
 def _build_planner_state(req: TripRequest) -> dict:
-    """将 TripRequest 转换为 PlannerState 字典（字段与 travel_plan_agent.__main__ 示例一致）"""
-    return {
+    """将 TripRequest 转换为 PlannerState 字典（基于 initial_state 补全用户请求字段）"""
+    state = initial_state()
+    state.update({
         "city": req.city,
         "start_date": req.start_date,
         "end_date": req.end_date,
@@ -74,29 +78,8 @@ def _build_planner_state(req: TripRequest) -> dict:
         "accommodation": req.accommodation,
         "preferences": req.preferences or [],
         "free_text_input": req.free_text_input or "",
-        # 以下字段由 Agent 各节点填充/消费，先置默认值
-        "attraction_names": set(),
-        "attractions_raw": "",
-        "attractions_result": [],
-        "search_round":0,
-        "meal_result": [],
-        "weather_result": [],
-        "hotel_anchors": [],
-        "hotels_raw": "",
-        "hotel_result": [],
-        "hotel_round": 0,
-        "route_result": None,
-        "day_route_locations": [],
-        "final_plan": None,
-        "history_plan": [],
-        "eval_round": 0,
-        "eval_feedback": "",
-        "eval_passed": False,
-        "parse_error": [],
-        "rag_result": "",
-        "rag_attraction_names": set(),
-        "messages": [],
-    }
+    })
+    return state
 
 
 @app.get("/api/health", response_model=HealthResponse, tags=["system"])

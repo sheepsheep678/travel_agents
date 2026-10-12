@@ -2,6 +2,7 @@
 
 """配置管理模块"""
 
+import logging
 import os
 from pathlib import Path
 from typing import List
@@ -16,6 +17,13 @@ load_dotenv()
 langgraph_env = Path(__file__).parent.parent.parent.parent / "langgraph" / ".env"
 if langgraph_env.exists():
     load_dotenv(langgraph_env, override=False)  # 不覆盖已有的环境变量
+
+logger = logging.getLogger(__name__)
+
+# 数据/索引文件默认落在 backend/app/api 目录（仍可由环境变量覆盖）
+_API_DIR = Path(__file__).resolve().parent.parent / "api"
+_DEFAULT_DB_PATH = str(_API_DIR / "vec.db")
+_DEFAULT_MD5_PATH = str(_API_DIR / "md5.text")
 
 
 class Settings(BaseSettings):
@@ -44,12 +52,12 @@ class Settings(BaseSettings):
     openai_api_key: str = ""
     openai_base_url: str = "https://dashscope.aliyuncs.com/compatible-mode/v1"
     openai_model_id: str = "qwen3.7-max"
-    embedding_model_name: str= "text-embedding-v4"
-    db_path: str="D:/java/code/PyCharm/Travel-agents/backend/app/api/vec.db"
+    embedding_model_name: str = "text-embedding-v4"
+    db_path: str = _DEFAULT_DB_PATH
     # 数据表名称
-    table: str="knowledge_base"
+    table: str = "knowledge_base"
     # MD5文件路径
-    md5_path: str="D:/java/code/PyCharm/Travel-agents/backend/app/api/md5.text"
+    md5_path: str = _DEFAULT_MD5_PATH
 
     # 日志配置
     log_level: str = "INFO"
@@ -92,9 +100,7 @@ def validate_config():
         raise ValueError(error_msg)
 
     if warnings:
-        print("\n⚠️  配置警告:")
-        for w in warnings:
-            print(f"  - {w}")
+        logger.warning("配置警告: %s", "；".join(warnings))
 
     return True
 

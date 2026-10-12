@@ -1,6 +1,10 @@
 import asyncio
+import logging
+
 from backend.app.services.config import get_settings
 from langchain_mcp_adapters.client import MultiServerMCPClient
+
+logger = logging.getLogger(__name__)
 
 # 全局缓存变量
 _client = None
@@ -32,22 +36,20 @@ async def _init_async():
         }
     }
 
-    print("正在启动 MCP 服务并连接...")
+    logger.info("正在启动 MCP 服务并连接...")
     _client = MultiServerMCPClient(mcp_server_config)
 
     try:
         # 核心耗时操作：启动进程、握手、获取工具列表
         _tools = await _client.get_tools()
-        print(f"成功加载 {len(_tools)} 个工具")
+        logger.info("成功加载 %d 个工具", len(_tools))
 
         # 打印工具名确认
         for t in _tools:
-            print(f" - {t.name}: {t.description}")
+            logger.info(" - %s: %s", t.name, t.description)
 
     except Exception as e:
-        print(f"MCP工具初始化失败: {e}")
-        import traceback
-        traceback.print_exc()
+        logger.exception("MCP工具初始化失败: %s", e)
 
 
 # ==========================================
