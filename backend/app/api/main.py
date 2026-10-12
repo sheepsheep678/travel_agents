@@ -26,6 +26,14 @@ from backend.app.services.travel_plan_agent import get_travel_plan_agent
 
 logger = logging.getLogger("travel_plan_api")
 
+# uvicorn 默认只配置自身 logger（uvicorn/uvicorn.error/uvicorn.access）、不配置根 logger，
+# 导致应用节点 logger（backend.app.*）的 INFO 日志因根 logger 默认 WARNING 级别被丢弃。
+# 这里显式配置根 logger，让各节点的 logger.info/warning/error 能输出到控制台。
+logging.basicConfig(
+    level=settings.log_level.upper(),
+    format="%(asctime)s %(levelname)s %(name)s: %(message)s",
+)
+
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
