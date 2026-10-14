@@ -66,3 +66,9 @@
   background: rgba(154, 106, 62, 0.14);
   color: var(--earth);
 }
+.sketchbook-mode .ant-message-notice-content {
+  background: var(--paper);
+  color: var(--ink);
+  border: 1px solid var(--hairline);
+  box-shadow: 0 12px 30px -12px rgba(43, 39, 33, 0.25);
+}

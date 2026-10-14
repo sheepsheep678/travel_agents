@@ -12,9 +12,9 @@
 | :---: | :---: |
 | ![下一页](pic/下一页.png) | ![开始规划](pic/开始规划.png) |
 
-| 规划结果 · 路线地图 / 预算 / 行程 |
-| :---: |
-| ![结果页](pic/result.png) |
+| 规划结果 · 概览 / 预算 | 规划结果 · 路线地图 | 规划结果 · 每日行程 |
+| :---: | :---: | :---: |
+| ![结果概览](pic/结果.png) | ![路线地图](pic/路线.png) | ![每日行程](pic/行程.png) |
 
 ## ✨ 功能特性
 
@@ -239,4 +239,4 @@ travel_agents/
 - [LangGraph](https://github.com/langchain-ai/langgraph) — 多智能体编排框架
 - [高德开放平台](https://lbs.amap.com/) — 地图与 MCP 服务
 - [阿里云百炼](https://bailian.console.aliyun.com/) — 通义千问模型服务
-- Threeui — 手账翻书 3D 动效
+- [Threeui](https://threeui.com/) — 手账翻书 3D 动效
