@@ -4,6 +4,7 @@ import 'ant-design-vue/dist/reset.css'
 import App from './App.vue'
 import router from './router'
 import './styles/index.css'
+import './styles/sketchbook.css'
 
 const app = createApp(App)
 app.use(Antd)

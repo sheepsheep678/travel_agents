@@ -1,0 +1,68 @@
+/* ========== 手账纸墨主题（作用域隔离，不动 :root / Result.vue） ========== */
+
+.sketchbook,
+.sketchbook-mode {
+  --paper: #ece7dc;
+  --ink: #2b2721;
+  --ink-soft: rgba(43, 39, 33, 0.58);
+  --ink-faint: rgba(43, 39, 33, 0.36);
+  --hairline: rgba(43, 39, 33, 0.14);
+  --earth: #9a6a3e;
+  --seal: #b3402a;
+  --display: 'Instrument Serif', 'Noto Serif SC', 'Songti SC', Georgia, 'Times New Roman', serif;
+  --font: 'Newsreader', 'Noto Serif SC', 'Songti SC', Georgia, 'Times New Roman', serif;
+  --track-caps: 0.24em;
+  --track-nav: 0.06em;
+}
+
+.sketchbook {
+  position: relative;
+  background: var(--paper);
+  color: var(--ink);
+  min-height: 100vh;
+  font-family: var(--font);
+  -webkit-font-smoothing: antialiased;
+  overflow-x: hidden;
+}
+
+/* 纸底 wash（纯 CSS，零外部资源） */
+.sketchbook-wash {
+  position: fixed;
+  inset: 0;
+  z-index: -1;
+  pointer-events: none;
+  background:
+    radial-gradient(1200px 700px at 12% -4%, rgba(154, 106, 62, 0.12), transparent 60%),
+    radial-gradient(900px 600px at 92% 104%, rgba(154, 106, 62, 0.09), transparent 55%),
+    radial-gradient(760px 520px at 50% 42%, rgba(255, 252, 244, 0.65), transparent 72%);
+}
+
+/* ---- Antd 弹层（渲染在 body，需 body 类作用域）纸主题 ---- */
+.sketchbook-mode .ant-picker-dropdown .ant-picker-panel-container,
+.sketchbook-mode .ant-select-dropdown {
+  background: var(--paper);
+  color: var(--ink);
+  border: 1px solid var(--hairline);
+  border-radius: 4px;
+  box-shadow: 0 12px 30px -12px rgba(43, 39, 33, 0.25);
+}
+.sketchbook-mode .ant-picker-header,
+.sketchbook-mode .ant-picker-content th,
+.sketchbook-mode .ant-picker-cell,
+.sketchbook-mode .ant-picker-header button {
+  color: var(--ink);
+}
+.sketchbook-mode .ant-picker-cell-in-view.ant-picker-cell-selected .ant-picker-cell-inner {
+  background: var(--ink);
+  color: var(--paper);
+}
+.sketchbook-mode .ant-picker-cell:hover:not(.ant-picker-cell-selected):not(.ant-picker-cell-range-start):not(.ant-picker-cell-range-end) .ant-picker-cell-inner {
+  background: rgba(43, 39, 33, 0.08);
+}
+.sketchbook-mode .ant-select-item {
+  color: var(--ink);
+}
+.sketchbook-mode .ant-select-item-option-selected:not(.ant-select-item-option-disabled) {
+  background: rgba(154, 106, 62, 0.14);
+  color: var(--earth);
+}
