@@ -1,11 +1,5 @@
-/* ========== 全局设计系统：落日渐变 · 旅行主题 ========== */
+/* ========== 全局基础样式（手账纸墨主题见 styles/sketchbook.css） ========== */
 :root {
-  --sunset-1: #1b2a5b;   /* 深夜蓝 */
-  --sunset-2: #4a2d6b;   /* 紫 */
-  --sunset-3: #c75b9c;   /* 玫红 */
-  --sunset-4: #f29a4e;   /* 橙 */
-  --sunset-5: #ffd166;   /* 金 */
-
   --gold: #ffb703;
   --coral: #ff6b6b;
   --teal: #43c6ac;
@@ -18,7 +12,6 @@
   --radius-lg: 20px;
   --radius-md: 14px;
   --shadow-soft: 0 18px 40px -18px rgba(31, 42, 82, 0.35);
-  --grad-main: linear-gradient(120deg, var(--sunset-2), var(--sunset-3) 45%, var(--sunset-4));
   --grad-gold: linear-gradient(120deg, var(--gold), var(--coral));
 }
 
@@ -80,15 +73,16 @@ body {
 }
 .breathe { animation: breathe 1.8s ease-in-out infinite; }
 
-/* 滚动条美化 */
+/* 滚动条美化（纸墨色，与手账主题一致；Firefox 走 scrollbar-color） */
+html { scrollbar-color: rgba(43, 39, 33, 0.18) transparent; }
 ::-webkit-scrollbar { width: 8px; height: 8px; }
-::-webkit-scrollbar-thumb { background: #c9d2e6; border-radius: 8px; }
-::-webkit-scrollbar-thumb:hover { background: #aab7d6; }
+::-webkit-scrollbar-thumb { background: rgba(43, 39, 33, 0.18); border-radius: 8px; }
+::-webkit-scrollbar-thumb:hover { background: rgba(43, 39, 33, 0.3); }
 
-/* antd 主题微调 */
+/* antd 主题微调（墨色主按钮；页面内有更具体的局部覆写时以局部为准） */
 .ant-btn-primary {
-  background: var(--grad-main);
+  background: var(--ink, #2b2721);
   border: none;
-  box-shadow: 0 10px 24px -10px rgba(71, 45, 112, 0.8);
+  box-shadow: 0 10px 24px -14px rgba(43, 39, 33, 0.55);
 }
-.ant-btn-primary:hover { opacity: 0.92; }
+.ant-btn-primary:hover { background: var(--earth, #9a6a3e); opacity: 0.95; }

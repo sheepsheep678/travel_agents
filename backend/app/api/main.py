@@ -1,4 +1,4 @@
-"""旅行助手后端 API 层
+"""旅迹智绘后端 API 层
 
 能力：
     POST /api/trip/plan         ->  TripRequest -> ainvoke -> TripPlanResponse（一次性）

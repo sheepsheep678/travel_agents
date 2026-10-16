@@ -25,7 +25,7 @@ async def rag_info_node(state: PlannerState, llm, tools) -> dict:
     logger.info("[RAG Agent] 假设文档: %s", answer)
     docs = await aretrieve(answer, city=state.get("city"))
     context = "\n\n".join(
-        f"[来源:{d.metadata.get('source', 'sheep开发者')}]\n{d.page_content}"
+        f"[来源:{d.metadata.get('source', '旅迹智绘')}]\n{d.page_content}"
         for d in docs
     )
     rag_attraction_result = await llm.ainvoke([

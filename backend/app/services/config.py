@@ -22,7 +22,8 @@ logger = logging.getLogger(__name__)
 
 # 数据/索引文件默认落在 backend/app/api 目录（仍可由环境变量覆盖）
 _API_DIR = Path(__file__).resolve().parent.parent / "api"
-_DEFAULT_DB_PATH = str(_API_DIR / "vec.db")
+# Chroma 本地持久化目录（取代原 SQLite-vec 的 vec.db 单文件）
+_DEFAULT_CHROMA_DIR = str(_API_DIR / "chroma_db")
 _DEFAULT_MD5_PATH = str(_API_DIR / "md5.text")
 
 
@@ -30,7 +31,7 @@ class Settings(BaseSettings):
     """应用配置"""
 
     # 应用基本配置
-    app_name: str = "langgraph-sheep智能旅行助手"
+    app_name: str = "旅迹智绘"
     app_version: str = "1.0.0"
     debug: bool = False
 
@@ -53,9 +54,12 @@ class Settings(BaseSettings):
     openai_base_url: str = "https://dashscope.aliyuncs.com/compatible-mode/v1"
     openai_model_id: str = "qwen3.7-max"
     embedding_model_name: str = "text-embedding-v4"
-    db_path: str = _DEFAULT_DB_PATH
-    # 数据表名称
-    table: str = "knowledge_base"
+    # Chroma 持久化目录（环境变量 CHROMA_DIR 可覆盖）
+    chroma_dir: str = _DEFAULT_CHROMA_DIR
+    # Chroma 集合名称（沿用原 SQLite 表名）
+    collection: str = "knowledge_base"
+    # HNSW 距离度量（集合创建后不可改，切换需删 chroma_dir 重新入库）
+    chroma_distance: str = "cosine"
     # MD5文件路径
     md5_path: str = _DEFAULT_MD5_PATH
 

@@ -14,3 +14,7 @@ frontend/.env
 # IDE
 .idea/
 .claude/
+
+# 向量库运行期临时文件（chroma.sqlite3 本身入库，WAL/SHM 是运行时产物）
+chroma.sqlite3-wal
+chroma.sqlite3-shm

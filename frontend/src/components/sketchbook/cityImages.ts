@@ -10,6 +10,7 @@
  * （纸底 + 衬线城市名 + 墨迹笔触），保证图片未提供时也能完整翻书。
  */
 import type { SketchbookCity } from '../../data/sketchbookCities'
+import { INK, PAPER } from '../../constants/theme'
 
 const modules = import.meta.glob('../../assets/sketchbook/*.png', {
   eager: true,
@@ -39,10 +40,10 @@ function fallbackSvg(name: string, en: string): string {
   const e = escapeXml(en.toUpperCase())
   const svg =
     `<svg xmlns="http://www.w3.org/2000/svg" width="1760" height="1240" viewBox="0 0 1760 1240">` +
-    `<rect width="1760" height="1240" fill="#ece7dc"/>` +
+    `<rect width="1760" height="1240" fill="${PAPER}"/>` +
     `<rect x="56" y="56" width="1648" height="1128" rx="18" fill="none" stroke="rgba(43,39,33,0.16)" stroke-width="2"/>` +
     `<line x1="880" y1="120" x2="880" y2="1120" stroke="rgba(43,39,33,0.10)" stroke-width="2"/>` +
-    `<text x="440" y="600" text-anchor="middle" font-family="Georgia,'Songti SC','SimSun',serif" font-size="164" fill="#2b2721">${n}</text>` +
+    `<text x="440" y="600" text-anchor="middle" font-family="Georgia,'Songti SC','SimSun',serif" font-size="164" fill="${INK}">${n}</text>` +
     `<text x="440" y="690" text-anchor="middle" font-family="Georgia,serif" font-size="40" letter-spacing="10" fill="rgba(43,39,33,0.45)">${e}</text>` +
     `<path d="M 250 760 C 350 720 530 720 630 760" fill="none" stroke="rgba(154,106,62,0.5)" stroke-width="3" stroke-linecap="round"/>` +
     `</svg>`

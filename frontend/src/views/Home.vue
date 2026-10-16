@@ -5,7 +5,7 @@
     <header class="sb-head">
       <p class="sb-kicker">看看大家都去哪儿</p>
       <h1 class="sb-title">翻开一页 · 遇见一座城</h1>
-      <p class="sb-sub">选一座城，写下你的旅行偏好，交给 LangGraph 多智能体为你书写每一天的行程。</p>
+      <p class="sb-sub">选一座城，写下你的旅行偏好，交给旅迹智绘为你书写每一天的行程。</p>
     </header>
 
     <SketchbookBook v-model:index="activeIndex" :pages="cities">
@@ -96,13 +96,13 @@ const nodeMilestones: { node: string; pct: number }[] = [
 ]
 
 const nodeLabels: Record<string, string> = {
-  attraction_tool_node: '正在搜索景点...',
-  attraction_enrich_node: '正在整合景点数据...',
-  rag_info_node: '正在检索本地知识库...',
-  weather_tool_node: '正在查询天气...',
-  hotel_tool_node: '正在搜索推荐酒店...',
-  hotel_enrich_node: '正在整合酒店数据...',
-  plan_node: '正在生成行程计划...',
+  attraction_tool_node: '正在搜索景点…',
+  attraction_enrich_node: '正在整合景点数据…',
+  rag_info_node: '正在检索本地知识库…',
+  weather_tool_node: '正在查询天气…',
+  hotel_tool_node: '正在搜索推荐酒店…',
+  hotel_enrich_node: '正在整合酒店数据…',
+  plan_node: '正在生成行程计划…',
 }
 
 const generating = ref(false)
@@ -188,7 +188,7 @@ async function onSubmit() {
       onStreamEvent(ev)
       if (ev.type === 'done') {
         if (!ev.success) {
-          message.error(ev.message || '生成失败，请稍后重试')
+          message.error(ev.message || '规划失败，请稍后重试')
           reset()
           return
         }

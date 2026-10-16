@@ -4,14 +4,31 @@ import logging
 import os
 
 from langchain_community.document_loaders import PyPDFLoader, TextLoader
-from langchain_community.vectorstores import SQLiteVec
 from langchain_core.documents import Document
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 
-from backend.app.nodes.llm import get_embedding_model
 from backend.app.services.config import settings
+from backend.app.services.rag_component import get_vector_store
 
 logger = logging.getLogger(__name__)
+
+# langchain-chroma 的 add_texts 不切批，会把整批文本一次性交给
+# DashScopeEmbeddings.embed_documents（单次 HTTP 请求）；保守分批更稳，失败时也能定位批次。
+INGEST_BATCH_SIZE = 10
+
+
+def _collection_is_empty() -> bool:
+    """集合内一个向量都没有则返回 True。
+
+    md5.text 账本只按「源文件内容」去重，与向量库状态无关。向量库被删除（本次迁移、
+    或误删 chroma_dir）时账本里仍记着全部 11 个文件，直接跳过会导致「一条都没入库」
+    且不报错。这里识别这种不一致并强制全量重建。
+    """
+    try:
+        return len(get_vector_store().get(limit=1)["ids"]) == 0
+    except Exception as e:  # 目录不存在 / 客户端异常：按空库处理，触发全量入库
+        logger.warning("读取 Chroma 集合状态失败，按空库处理: %s", e)
+        return True
 
 
 def load_file(path: str) -> list[Document]:
@@ -72,10 +89,13 @@ def build_from_dir(docs_dir: str):
     )
     all_docs = []
     pending_md5 = []
+    force_rebuild = _collection_is_empty()
+    if force_rebuild:
+        logger.warning("Chroma 集合为空或不可读，忽略 MD5 账本，执行全量入库")
     for f in glob.glob(os.path.join(docs_dir, "**/*"), recursive=True):
         if os.path.isfile(f) and f.lower().endswith((".txt", ".pdf")):
             md5_hex = get_file_md5_hex(f)
-            if check_md5_hex(md5_hex):
+            if not force_rebuild and check_md5_hex(md5_hex):
                 logger.info("跳过: %s: 已在本地知识库中", f)
                 continue
             # 城市 = 文件名（不含扩展名），例如 北京.txt → 北京
@@ -98,16 +118,17 @@ def build_from_dir(docs_dir: str):
         logger.info("没有新文档需要写入")
         return None
 
-    # 2. 写入 SQLiteVec 向量库（自动建表 + 自动嵌入）
-    vec_store = SQLiteVec.from_documents(
-        documents=all_docs,
-        embedding=get_embedding_model(),
-        table=settings.table,
-        db_file=settings.db_path,
-    )
+    # 2. 写入 Chroma 向量库（集合配置与嵌入模型由 get_vector_store 统一提供）
+    vec_store = get_vector_store()
+    for start in range(0, len(all_docs), INGEST_BATCH_SIZE):
+        batch = all_docs[start: start + INGEST_BATCH_SIZE]
+        vec_store.add_documents(batch)
+        logger.info("已写入 %d/%d 个 chunk",
+                    min(start + INGEST_BATCH_SIZE, len(all_docs)), len(all_docs))
     for md5 in pending_md5:
         save_md5_hex(md5)
-    logger.info("写入完成 -> %s", settings.db_path)
+    logger.info("写入完成 -> %s（集合 %s，共 %d 个 chunk）",
+                settings.chroma_dir, settings.collection, len(all_docs))
     return vec_store
 
 

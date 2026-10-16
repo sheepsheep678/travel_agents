@@ -25,7 +25,7 @@
         <div v-for="(l, i) in logs" :key="i" class="sb-log" :class="l.level">{{ l.text }}</div>
       </div>
 
-      <button class="sb-cancel" @click="$emit('cancel')">取消生成</button>
+      <button class="sb-cancel" @click="$emit('cancel')">取消规划</button>
     </div>
   </div>
 </template>

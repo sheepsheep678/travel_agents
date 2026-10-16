@@ -4,7 +4,7 @@
     <div v-if="!plan" class="empty">
       <div class="empty-ic">🧳</div>
       <h2>还没有行程数据</h2>
-      <p>先去填写你的旅行偏好，让 AI 为你生成一份专属计划吧</p>
+      <p>先去填写你的旅行偏好，让旅迹智绘为你生成一份专属计划吧</p>
       <a-button type="primary" size="large" @click="$router.push('/')">去规划 →</a-button>
     </div>
 
@@ -15,7 +15,7 @@
           <div class="topbar-title">
             <div class="city-badge">{{ plan.city }}</div>
             <div class="topbar-meta">
-              <span class="meta-date">{{ plan.start_date }} ~ {{ plan.end_date }}</span>
+              <span class="meta-date">{{ fmtDate(plan.start_date) }} ~ {{ fmtDate(plan.end_date) }}</span>
               <span class="meta-tag">共 {{ plan.days.length }} 天</span>
             </div>
           </div>
@@ -118,7 +118,7 @@
                   <div class="day-head">
                     <div>
                       <span class="day-badge" :style="{ background: dayColor(di) }">第 {{ di + 1 }} 天</span>
-                      <span class="day-date">{{ day.date }}</span>
+                      <span class="day-date">{{ fmtDate(day.date) }}</span>
                     </div>
                     <div class="day-desc">{{ day.description }}</div>
                   </div>
@@ -211,7 +211,7 @@
             <h2 class="sec-title">天气信息</h2>
             <div class="weather-grid">
               <div v-for="w in plan.weather_info" :key="w.date" class="weather-card">
-                <div class="w-date">{{ w.date }}</div>
+                <div class="w-date">{{ fmtDate(w.date) }}</div>
                 <div class="w-ic">{{ weatherIcon(w.day_weather) }}</div>
                 <div class="w-weather">
                   <b>{{ w.day_weather || '暂无预报' }}</b>
@@ -223,7 +223,7 @@
             </div>
           </section>
 
-          <footer class="foot">✨ 由 LangGraph 多智能体生成 · AI 智能旅行助手</footer>
+          <footer class="foot">✨ 由旅迹智绘绘制 · 多智能体协作</footer>
         </main>
       </div>
     </template>
@@ -244,6 +244,7 @@ import AMapLoader from '@amap/amap-jsapi-loader'
 import html2canvas from 'html2canvas'
 import { jsPDF } from 'jspdf'
 import { tripStore } from '../store'
+import { PAPER } from '../constants/theme'
 import type { TripPlan, DayPlan, Attraction } from '../types'
 
 // ------- 数据 -------
@@ -277,6 +278,12 @@ const budgetItems = computed(() => {
 
 function mealTypeLabel(t: string): string {
   return { breakfast: '早餐', lunch: '午餐', dinner: '晚餐', snack: '小吃' }[t] || t
+}
+
+/** YYYY-MM-DD → 6月1日（手账文案不露 ISO 格式；非该格式则原样返回） */
+function fmtDate(s?: string): string {
+  const m = /^(\d{4})-(\d{2})-(\d{2})/.exec(s ?? '')
+  return m ? `${Number(m[2])}月${Number(m[3])}日` : (s ?? '')
 }
 
 /** 取景点图片：优先封面图，其次图片列表第一张，都没有返回空串（走占位图）。高德图床为 http，统一升级为 https 防混合内容拦截 */
@@ -328,7 +335,7 @@ let polylines: any[] = []
 async function initMap() {
   const key = import.meta.env.VITE_AMAP_WEB_JS_KEY
   if (!key) {
-    mapNotice.value = '未配置 VITE_AMAP_WEB_JS_KEY，地图无法加载（请填入高德 Web 端 JS Key）'
+    mapNotice.value = '地图密钥未配置，暂时无法显示地图'
     return
   }
   if (!mapEl.value) return
@@ -356,7 +363,7 @@ async function initMap() {
     renderMarkers()
   } catch (e: any) {
     console.error('地图加载失败', e)
-    mapNotice.value = '地图加载失败：' + (e?.message || '请检查 Web JS Key 配置')
+    mapNotice.value = '地图加载失败，请检查地图密钥配置'
   }
 }
 
@@ -490,9 +497,9 @@ const contentRef = ref<HTMLElement>()
 
 async function exportPNG() {
   if (!contentRef.value) return
-  message.loading({ content: '正在导出 PNG...', key: 'export' })
+  message.loading({ content: '正在导出 PNG…', key: 'export' })
   try {
-    const canvas = await html2canvas(contentRef.value, { scale: 2, backgroundColor: '#ece7dc', useCORS: true })
+    const canvas = await html2canvas(contentRef.value, { scale: 2, backgroundColor: PAPER, useCORS: true })
     const a = document.createElement('a')
     a.download = `旅行计划-${plan.value?.city || 'plan'}.png`
     a.href = canvas.toDataURL('image/png')
@@ -505,9 +512,9 @@ async function exportPNG() {
 
 async function exportPDF() {
   if (!contentRef.value) return
-  message.loading({ content: '正在导出 PDF...', key: 'export' })
+  message.loading({ content: '正在导出 PDF…', key: 'export' })
   try {
-    const canvas = await html2canvas(contentRef.value, { scale: 2, backgroundColor: '#ece7dc', useCORS: true })
+    const canvas = await html2canvas(contentRef.value, { scale: 2, backgroundColor: PAPER, useCORS: true })
     const img = canvas.toDataURL('image/jpeg', 0.95)
     const pdf = new jsPDF('p', 'mm', 'a4')
     const pageW = pdf.internal.pageSize.getWidth()

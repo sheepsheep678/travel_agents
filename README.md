@@ -1,6 +1,6 @@
-# Travel-agents · 智能旅行助手
+# 旅迹智绘 · Travel-agents
 
-基于 **LangGraph 多智能体工作流** 的 AI 旅行规划系统：用户在手账翻书式首页选定城市、日期与偏好后，Agent 并行调用高德地图 MCP 工具与本地 RAG 知识库，获取真实景点 / 酒店 / 天气数据，经「规划 → 评估 → 反思修订」循环生成包含每日行程、餐饮、住宿、预算的完整旅行计划，并通过 SSE 实时推送各节点进度。
+**旅迹智绘** 是基于 **LangGraph 多智能体工作流** 的 AI 旅行规划系统：用户在手账翻书式首页选定城市、日期与偏好后，Agent 并行调用高德地图 MCP 工具与本地 RAG 知识库，获取真实景点 / 酒店 / 天气数据，经「规划 → 评估 → 反思修订」循环生成包含每日行程、餐饮、住宿、预算的完整旅行计划，并通过 SSE 实时推送各节点进度。
 
 ## 📸 界面预览
 
@@ -69,7 +69,7 @@ graph TD
 | Agent 编排 | LangGraph 1.x、LangChain 1.x |
 | 大模型 | LangChain `init_chat_model`（OpenAI 兼容接口，默认阿里云 DashScope 通义千问，可换任意兼容模型） |
 | 工具接入 | 高德地图 MCP（SSE 传输） |
-| RAG | SQLite-vec、HyDE、DashScope text-embedding |
+| RAG | Chroma、HyDE、DashScope text-embedding |
 | 后端 | FastAPI、Uvicorn、SSE（`astream_events`） |
 | 前端 | Vue 3、Vite、TypeScript、Ant Design Vue、高德地图 JS API 2.0、jspdf / html2canvas、CSS 3D 翻书动效 |
 | 可观测 | LangSmith 追踪（可选） |
@@ -130,7 +130,7 @@ LANGSMITH_TRACING=false
 LANGSMITH_API_KEY=
 ```
 
-> 💡 向量库路径 `db_path` / `md5_path` 已按代码位置自动推导到 `backend/app/api/`（`vec.db` / `md5.text`），无需手动改绝对路径；如需自定义仍可通过同名环境变量覆盖。
+> 💡 向量库目录 `chroma_dir` / `md5_path` 已按代码位置自动推导到 `backend/app/api/`（`chroma_db/` / `md5.text`），无需手动改绝对路径；如需自定义仍可通过同名环境变量覆盖。
 
 ### 3. 启动后端（项目根目录执行）
 ```bash
@@ -179,14 +179,16 @@ npm run dev
 
 ## 📚 RAG 知识库
 
-11 座城市的攻略语料位于 `backend/app/api/data/*.txt`，向量化后存入 `vec.db`（表名 `knowledge_base`）。新增或更新语料后重建向量库：
+11 座城市的攻略语料位于 `backend/app/api/data/*.txt`，向量化后存入 Chroma 持久化目录 `backend/app/api/chroma_db/`（集合名 `knowledge_base`，余弦距离）。新增或更新语料后重建向量库：
 
 ```bash
 # 脚本会按自身位置自动定位 data 目录，在项目根目录执行即可
 python -m backend.app.api.rag_file_uploader
 ```
 
-上传脚本按文件 MD5 去重，已入库文件自动跳过；切分策略为 500 字符 / 50 字符重叠，按中文标点优先断句。
+上传脚本按文件 MD5 去重，已入库文件自动跳过；若 Chroma 集合为空（首次入库或重建向量库），脚本会自动忽略 MD5 账本执行全量入库。切分策略为 500 字符 / 50 字符重叠，按中文标点优先断句。
+
+> ⚠️ **入库后必须重启后端**。Chroma 的索引按持久化目录缓存在**进程内**，后端运行期间用另一个进程执行入库脚本，磁盘数据虽已更新但后端不会重新加载——此时检索会少返回结果，或直接抛 `InternalError: Error finding id`。停掉后端再入库（或入库后立即重启）即可。
 
 ## 📁 项目结构
 
@@ -197,7 +199,7 @@ travel_agents/
 │   │   ├── data/                  # 城市攻略语料（txt，11 城）
 │   │   ├── main.py                # FastAPI 入口（健康检查/规划/流式规划）
 │   │   ├── rag_file_uploader.py   # 知识库向量化上传脚本
-│   │   ├── vec.db                 # SQLite-vec 向量库
+│   │   ├── chroma_db/             # Chroma 向量库（本地持久化目录）
 │   │   └── md5.text               # 已入库文件 MD5 去重记录
 │   ├── models/
 │   │   ├── request.py             # TripRequest
@@ -216,7 +218,7 @@ travel_agents/
 │   │       └── amap_mcp_servers.py    # 高德 MCP 客户端（SSE）
 │   ├── services/
 │   │   ├── config.py              # pydantic-settings 配置
-│   │   ├── rag_component.py       # SQLite-vec 异步检索
+│   │   ├── rag_component.py       # Chroma 异步检索
 │   │   └── travel_plan_agent.py   # LangGraph 图定义（核心）
 │   ├── state.py                   # PlannerState 状态定义与 reducer
 │   ├── constants.py               # 节点文案 / 轮次 / 并发等常量
