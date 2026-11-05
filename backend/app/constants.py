@@ -14,7 +14,8 @@ NODE_LABELS = {
 MAX_EVAL_ROUNDS = 2
 
 # 带重试策略的节点最大重试次数
-NODE_RETRY_ATTEMPTS = 3
+# 注意：LLM 单次可能长达 80s，3 次重试叠加超时会逼近前端 10 分钟上限，故降为 2
+NODE_RETRY_ATTEMPTS = 2
 
 # 并发与重试
 IO_CONCURRENCY = 3

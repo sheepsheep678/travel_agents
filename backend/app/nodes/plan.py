@@ -8,6 +8,7 @@ from backend.app.models.response import Budget, DayPlan, ErrorResponse, Meal, Tr
 from backend.app.state import PlannerState
 from backend.app.prompts import PLAN_SYSTEM, PLAN_RETRY_MESSAGES, build_plan_prompt
 from backend.app.nodes.utils import build_date_list
+from backend.app.services.config import settings
 
 logger = logging.getLogger(__name__)
 
@@ -34,11 +35,12 @@ class PlannerOutput(BaseModel):
     budget: Optional[Budget] = None
 
 
-def _plan_invalid(p: PlannerOutput) -> bool:
-    """days/routes 为空，或存在某天未选任何景点 → 需重试"""
-    if not p.days or not p.day_routes:
-        return True
-    return any(not d.attraction_names for d in p.days)
+def _plan_unusable(p: PlannerOutput, travel_days: int) -> bool:
+    """仅当计划结构不可用（空计划/天数不符）时重试。
+
+    某天 attraction_names 为空不触发重试：下方有确定性回填兜底。
+    """
+    return not p.days or len(p.days) != travel_days
 
 
 # 规划节点：汇总全部数据，LLM生成完整旅行计划及每日路线起终点
@@ -51,6 +53,12 @@ async def plan_node(state: PlannerState, llm, tools) -> dict:
     # 确定性推算每日日期
     travel_days = state.get("travel_days") or 1
     date_list = build_date_list(state["start_date"], travel_days)
+
+    # 读取端按名称去重：补搜轮列表 reducer 可能累积重复项
+    attractions_by_name = {a.name: a for a in attractions if a.location is not None}
+    hotels_by_name = {h.name: h for h in hotels}
+    attractions = list(attractions_by_name.values())
+    hotels = list(hotels_by_name.values())
 
     # 只给LLM精简信息(名称/类别/时长/价格)，坐标、地址、描述、图片等详情后续从state按名称回填
     attractions_brief = [
@@ -106,20 +114,18 @@ async def plan_node(state: PlannerState, llm, tools) -> dict:
         {"role": "user", "content": plan_prompt},
     ])
 
-    # LLM 偶发返回空计划或空景点日(attraction_names=[])，额外重试最多 2 次
-    for retry_msg in PLAN_RETRY_MESSAGES:
-        if not _plan_invalid(result):
+    # 仅当计划结构不可用（空计划/天数不符）时重试；空景点日交给下方确定性回填
+    for i in range(max(0, settings.plan_max_llm_retries)):
+        if not _plan_unusable(result, travel_days):
             break
-        logger.info("[规划Agent] 存在空计划/空景点日，重试...")
+        logger.info("[规划Agent] 计划结构不可用，重试...")
+        retry_msg = PLAN_RETRY_MESSAGES[min(i, len(PLAN_RETRY_MESSAGES) - 1)]
         result = await structured_llm.ainvoke([
             {"role": "system", "content": retry_msg},
             {"role": "user", "content": plan_prompt},
         ])
 
     # 确定性重建完整计划：景点/酒店/天气/日期等具体信息全部从state按名称回填，LLM只提供计划框架
-    attractions_by_name = {a.name: a for a in attractions if a.location is not None}
-    hotels_by_name = {h.name: h for h in hotels}
-
     days = []
     for b in result.days:
         day_attractions = []

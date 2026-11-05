@@ -3,6 +3,8 @@ from typing import Literal
 
 from langgraph.constants import END
 
+from backend.app.nodes.utils import find_uncovered_names
+from backend.app.services.config import settings
 from backend.app.state import PlannerState
 
 logger = logging.getLogger(__name__)
@@ -44,7 +46,8 @@ def rag_attraction_node_router(state: PlannerState) -> Literal["plan_gate_node",
         logger.info("[RAG路由] RAG景点名为空，进入门控")
         return "plan_gate_node"
 
-    missing = [n for n in rag_names if n not in attraction_names]
+    # 归一化匹配：RAG 的「栈桥」应被高德的「栈桥景区」覆盖，避免误触发整链补搜
+    missing = find_uncovered_names(rag_names, attraction_names, settings.rag_name_fuzzy_match)
     if missing:
         logger.info("[RAG路由] %d 个RAG景点未被覆盖，跳转补搜: %s", len(missing), missing)
         return "attraction_tool_node"

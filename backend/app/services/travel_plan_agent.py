@@ -1,5 +1,6 @@
 import asyncio
 import logging
+import time
 from functools import partial
 
 from langgraph.constants import START, END
@@ -8,7 +9,7 @@ from langgraph.types import RetryPolicy
 
 from backend.app.state import PlannerState, initial_state
 from backend.app.constants import NODE_LABELS, NODE_RETRY_ATTEMPTS
-from backend.app.nodes.llm import get_llm
+from backend.app.nodes.llm import get_llm, get_fast_llm
 from backend.app.nodes.tools.amap_mcp_servers import get_amap_mcp_client, get_amap_mcp_tools
 from backend.app.nodes import attraction, hotel, weather, rag, plan, evaluation, gate
 from backend.app.services.config import settings
@@ -21,12 +22,10 @@ _agent_instance = None
 class TravelPlanAgent:
     def __init__(self):
         self.llm = get_llm()
+        # RAG / 评估等轻量任务走快模型；未配置 OPENAI_FAST_MODEL_ID 时与 self.llm 同一实例
+        self.fast_llm = get_fast_llm()
         self.mcp_client = get_amap_mcp_client()
         self.mcp_tools = get_amap_mcp_tools()
-        self.attraction_model = self.llm.bind_tools(self.mcp_tools)
-        self.weather_model = self.llm.bind_tools(self.mcp_tools)
-        self.hotel_model = self.llm.bind_tools(self.mcp_tools)
-        self.planner_model = self.llm.bind_tools(self.mcp_tools)
         self.graph = None
 
     def _build_planner_graph(self):
@@ -38,7 +37,7 @@ class TravelPlanAgent:
                           partial(attraction.attraction_enrich_node, llm=self.llm, tools=self.mcp_tools),
                           retry_policy=RetryPolicy(max_attempts=NODE_RETRY_ATTEMPTS))
         workflow.add_node("rag_info_node",
-                          partial(rag.rag_info_node, llm=self.llm, tools=self.mcp_tools),
+                          partial(rag.rag_info_node, llm=self.fast_llm, tools=self.mcp_tools),
                           retry_policy=RetryPolicy(max_attempts=NODE_RETRY_ATTEMPTS))
         workflow.add_node("weather_tool_node",
                           partial(weather.weather_tool_node, llm=self.llm, tools=self.mcp_tools))
@@ -52,7 +51,7 @@ class TravelPlanAgent:
                           partial(plan.plan_node, llm=self.llm, tools=self.mcp_tools),
                           retry_policy=RetryPolicy(max_attempts=NODE_RETRY_ATTEMPTS))
         workflow.add_node("evaluation_node",
-                          partial(evaluation.evaluation_node, llm=self.llm, tools=self.mcp_tools),
+                          partial(evaluation.evaluation_node, llm=self.fast_llm, tools=self.mcp_tools),
                           retry_policy=RetryPolicy(max_attempts=NODE_RETRY_ATTEMPTS))
 
         workflow.add_edge(START, "attraction_tool_node")
@@ -101,6 +100,7 @@ class TravelPlanAgent:
 
         final_plan = None
         parse_errors = []
+        started_at: dict[str, float] = {}
         try:
             async for ev in self.graph.astream_events(state, version="v2"):
                 name = ev.get("name") or ""
@@ -112,6 +112,7 @@ class TravelPlanAgent:
                     continue
 
                 if etype == "on_chain_start":
+                    started_at[name] = time.perf_counter()
                     yield {"type": "node_start", "node": name, "label": NODE_LABELS[name]}
                 elif etype == "on_chain_end":
                     output = (ev.get("data") or {}).get("output") or {}
@@ -120,12 +121,17 @@ class TravelPlanAgent:
                         msg = getattr(err, "message", None) or ""
                         if msg:
                             parse_errors.append(msg)
-                    yield {"type": "node_end", "node": name,
-                           "payload": self._node_end_payload(name, output)}
+                    payload = self._node_end_payload(name, output)
+                    t0 = started_at.pop(name, None)
+                    if t0 is not None:
+                        payload["duration_ms"] = round((time.perf_counter() - t0) * 1000)
+                        logger.info("[耗时] %s %d ms", name, payload["duration_ms"])
+                    yield {"type": "node_end", "node": name, "payload": payload}
                     # plan_node 经门控放行后仅执行一次；修订循环会再次激活，取最后非空计划
                     if name == "plan_node" and output.get("final_plan") is not None:
                         final_plan = output["final_plan"]
                 else:  # on_chain_error：带重试策略的节点会再次启动
+                    started_at.pop(name, None)
                     error = (ev.get("data") or {}).get("error") or "未知错误"
                     yield {"type": "node_error", "node": name,
                            "message": str(error)[:200], "retry": True}

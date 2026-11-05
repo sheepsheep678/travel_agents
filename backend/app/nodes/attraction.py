@@ -11,7 +11,8 @@ from backend.app.constants import (
     IO_CONCURRENCY, DETAIL_FETCH_RETRIES, DETAIL_RETRY_DELAY, POI_TOP_K,
 )
 from backend.app.prompts import ATTRACTION_ENRICH_SYSTEM, build_enrich_prompt
-from backend.app.nodes.utils import _extract_text, get_tool, fetch_details
+from backend.app.nodes.utils import _extract_text, get_tool, fetch_details, find_uncovered_names
+from backend.app.services.config import settings
 
 logger = logging.getLogger(__name__)
 
@@ -59,8 +60,16 @@ async def attraction_tool_node(state: PlannerState, llm, tools) -> dict:
 
     rag_names = state.get("rag_attraction_names") or set()
     attr_names = state.get("attraction_names") or set()
-    missing = sorted(rag_names - attr_names) if state.get("search_round", 0) > 0 else []
-    keyword_list = (state.get("preferences", []) + missing) or ["景点"]
+    if state.get("search_round", 0) > 0:
+        # 补搜轮只搜 RAG 未覆盖的名称，避免重搜 preferences 导致整链重复
+        missing = sorted(find_uncovered_names(rag_names, attr_names, settings.rag_name_fuzzy_match))
+        keyword_list = missing
+    else:
+        keyword_list = list(state.get("preferences", []) or ["景点"])
+    keyword_list = list(dict.fromkeys(keyword_list))
+    if not keyword_list:
+        logger.info("[景点Agent] 无待补搜景点，跳过")
+        return {"attractions_raw": ""}
     search_semaphore = asyncio.Semaphore(IO_CONCURRENCY)
 
     async def search_one(keyword: str):
@@ -69,8 +78,10 @@ async def attraction_tool_node(state: PlannerState, llm, tools) -> dict:
             try:
                 search_result = await search_tool.ainvoke(tool_args)
                 search_data = json.loads(_extract_text(search_result))
+                # 排除住宿类 POI（typecode 10xxxx）：景点名检索可能返回同名酒店
                 return [(poi.get("id"), poi.get("name"), poi)
-                        for poi in search_data.get("pois", [])[:POI_TOP_K]]
+                        for poi in search_data.get("pois", [])[:POI_TOP_K]
+                        if not str(poi.get("typecode", "")).startswith("10")]
             except (json.JSONDecodeError, TypeError):
                 logger.warning("[景点Agent] 关键词「%s」搜索结果解析失败", keyword)
                 return []
@@ -90,7 +101,8 @@ async def attraction_tool_node(state: PlannerState, llm, tools) -> dict:
 
     if not poi_list:
         logger.warning("[景点Agent] 未搜索到任何景点")
-        return {"parse_error": [ErrorResponse(message="未搜索到景点")]}
+        # 清空 raw，避免 enrich 把上一轮数据再送进 LLM
+        return {"attractions_raw": "", "parse_error": [ErrorResponse(message="未搜索到景点")]}
 
     logger.info("[景点Agent] 景点列表: %s", poi_list)
 
@@ -141,4 +153,19 @@ async def attraction_enrich_node(state: PlannerState, llm, tools) -> dict:
     # 确定性回填照片：LLM 可能漏填/填错图片字段，按 poi_id/name 从原始数据直接注入，保证图片不丢
     backfill_attraction_photos(raw_data, result.attractions)
 
-    return {"attractions_result": result.attractions}
+    # 只返回新景点：补搜轮若命中同一 POI，避免列表 reducer 累积重复项
+    existing = state.get("attractions_result", [])
+    existing_ids = {a.poi_id for a in existing if a.poi_id}
+    existing_names = {a.name for a in existing}
+    new_items, seen_ids, seen_names = [], set(), set()
+    for a in result.attractions:
+        if (a.poi_id and a.poi_id in existing_ids) or a.name in existing_names:
+            continue
+        if (a.poi_id and a.poi_id in seen_ids) or a.name in seen_names:
+            continue
+        if a.poi_id:
+            seen_ids.add(a.poi_id)
+        seen_names.add(a.name)
+        new_items.append(a)
+
+    return {"attractions_result": new_items}

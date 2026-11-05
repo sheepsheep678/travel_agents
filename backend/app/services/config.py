@@ -5,7 +5,7 @@
 import logging
 import os
 from pathlib import Path
-from typing import List
+from typing import List, Optional
 from pydantic_settings import BaseSettings
 from dotenv import load_dotenv
 
@@ -52,8 +52,30 @@ class Settings(BaseSettings):
     # LLM配置 (从环境变量读取,由langgraph管理)
     openai_api_key: str = ""
     openai_base_url: str = "https://dashscope.aliyuncs.com/compatible-mode/v1"
-    openai_model_id: str = "qwen3.7-max"
+    openai_model_id: str = "qwen3.8-max"
     embedding_model_name: str = "text-embedding-v4"
+
+    # LLM 调用参数（快模型用于 RAG/评估，主模型用于景点整合/规划）
+    openai_timeout: float = 90.0           # 快模型单次请求超时（秒）
+    openai_plan_timeout: float = 180.0     # 主模型单次请求超时（秒），不可沿用 60
+    openai_max_retries: int = 1            # SDK 层重试次数（图级重试另算）
+    openai_max_tokens: Optional[int] = None
+    openai_fast_model_id: str = "qwen3.8-flash"         # 留空 = 回退主模型
+    openai_fast_max_tokens: Optional[int] = 4096
+    openai_fast_temperature: float = 0.1
+    openai_fast_extra_body: str = ""       # 原始 JSON，覆盖快模型的额外请求体
+    openai_plan_extra_body: str = ""       # 原始 JSON，覆盖主模型的额外请求体
+    # qwen 混合思考模型会把时间/max_tokens 消耗在思考上：实测主模型单次 plan 调用
+    # 默认 thinking 时约 219s，关闭后大幅缩短。端点不支持时设为 false 回退
+    openai_disable_thinking: bool = True   # 快模型（RAG/评估）
+    openai_plan_disable_thinking: bool = True  # 主模型（景点整合/规划）
+
+    # 流程开关（均可回退到旧行为）
+    rag_use_hyde: bool = True
+    rag_name_fuzzy_match: bool = True
+    plan_max_llm_retries: int = 1
+    eval_skip_llm_on_hard_issues: bool = True
+    hotel_anchor_concurrency: int = 3
     # Chroma 持久化目录（环境变量 CHROMA_DIR 可覆盖）
     chroma_dir: str = _DEFAULT_CHROMA_DIR
     # Chroma 集合名称（沿用原 SQLite 表名）

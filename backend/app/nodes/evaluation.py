@@ -6,6 +6,7 @@ from pydantic import BaseModel, Field
 from backend.app.state import PlannerState
 from backend.app.constants import MAX_DAILY_MINUTES, MAX_EVAL_ROUNDS
 from backend.app.prompts import EVAL_SYSTEM, build_eval_prompt
+from backend.app.services.config import settings
 
 logger = logging.getLogger(__name__)
 
@@ -46,6 +47,17 @@ async def evaluation_node(state: PlannerState, llm, tools) -> dict:
     # ---- 第一步：确定性强校验（命中任一即判不通过） ----
     hard_issues = compute_hard_issues(plan, travel_days, hotels)
 
+    # 硬性问题已一票否决，无需再花一次 LLM 调用
+    if hard_issues and settings.eval_skip_llm_on_hard_issues:
+        logger.info("[评估Agent] 命中 %d 个硬性问题，跳过 LLM 评估", len(hard_issues))
+        feedback = "\n".join(f"- {item}" for item in hard_issues)
+        return {
+            "eval_round": state.get("eval_round", 0) + 1,
+            "eval_passed": False,
+            "eval_feedback": feedback,
+            "history_plan": [plan],
+        }
+
     # ---- 第二步：LLM合理性评估 ----
     plan_brief = [
         {"day_index": d.day_index, "date": d.date,
@@ -60,10 +72,21 @@ async def evaluation_node(state: PlannerState, llm, tools) -> dict:
 
     logger.info("[评估Agent] LLM评估行程合理性中...")
     structured_llm = llm.with_structured_output(EvalOutput)
-    eval_result = await structured_llm.ainvoke([
-        {"role": "system", "content": EVAL_SYSTEM},
-        {"role": "user", "content": eval_prompt},
-    ])
+    try:
+        eval_result = await structured_llm.ainvoke([
+            {"role": "system", "content": EVAL_SYSTEM},
+            {"role": "user", "content": eval_prompt},
+        ])
+    except Exception as e:
+        # 评估只做质量增强：模型超长/结构化解析失败不应拖垮整次规划
+        logger.warning("[评估Agent] LLM评估失败，降级为确定性结论: %s", e)
+        feedback = "\n".join(f"- {item}" for item in hard_issues)
+        return {
+            "eval_round": state.get("eval_round", 0) + 1,
+            "eval_passed": not hard_issues,
+            "eval_feedback": feedback,
+            "history_plan": [] if not hard_issues else [plan],
+        }
 
     # 硬性问题一票否决；无硬性问题时以LLM结论为准
     passed = (not hard_issues) and eval_result.passed
