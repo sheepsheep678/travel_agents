@@ -77,7 +77,7 @@ def get_llm():
 
 
 def get_fast_llm():
-    """快模型用于 RAG / 评估等轻量任务；未配置时回退主模型同一实例"""
+    """快模型用于 RAG / 评估 / 景点描述等轻量任务；未配置时回退主模型同一实例"""
     global _fast_llm
     if not settings.openai_fast_model_id.strip():
         return get_llm()

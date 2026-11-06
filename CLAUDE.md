@@ -65,7 +65,8 @@ plan_gate_node ──数据齐备──→ plan_node → evaluation_node ──�
 LLM 只输出计划**框架与名称**（`plan.py` 的 `PlannerOutput` / `DayPlanBrief`），所有具体详情由系统按名称从 state 确定性回填：
 
 - 景点对象、酒店对象、天气、日期 → `plan.py` 按名称查找并回填；未知名称跳过/置空；空景点日按描述关键词或评分兜底填充。
-- 景点图片 → `attraction.backfill_attraction_photos()` 按 `poi_id` / `name` 从原始 MCP 数据注入。
+- 景点详情（name/address/location/category/rating/photos/poi_id/ticket_price/visit_duration）→ `attraction.map_attraction_details()` 从原始 MCP 数据确定性映射，图片由 `photo` 字段直接解析；门票价缺失时填 0，不按知名度猜测。
+- 景点 description → 仅把 name/type/alias/business_area/opentime2 交给快模型生成；失败、超时或空返回时使用确定性模板兜底。
 - 酒店 → `hotel.map_hotel_details()` 直接映射原始数据，并用 Haversine 计算「距 X 约 Y km」。
 
 不要让 LLM 直接生成地址、坐标、图片等易幻觉字段。

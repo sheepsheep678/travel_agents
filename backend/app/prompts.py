@@ -5,49 +5,27 @@ import json
 from backend.app.constants import MAX_DAILY_MINUTES
 
 
-# ============ 景点 enrich 节点 ============
+# ============ 景点 enrich 节点（仅生成 description） ============
 
-ATTRACTION_ENRICH_SYSTEM = "你是景点信息整合专家，擅长将高德地图POI原始数据严格、准确地转换为结构化景点模型，绝不编造或篡改原始数据。"
+ATTRACTION_DESCRIPTION_SYSTEM = (
+    "你是景点简介撰写助手。只能依据用户提供的字段写40-80字中文简介；"
+    "禁止编造门票价格、历史年代、荣誉称号、设施或未提供的背景；禁止输出地址和经纬度。"
+)
 
 
-def build_enrich_prompt(city: str, preferences: list, raw_data: str) -> str:
-    return f"""你是高德地图POI数据整合专家。以下是通过高德地图POI详情接口获取的景点详情列表(JSON格式)，请将每条数据严格转换为结构化的景点模型。
+def build_attraction_description_prompt(city: str, items: list) -> str:
+    return f"""城市：{city}
+请为下列每个景点各写一段40-80字的中文简介，用于旅行行程展示。
 
-原始数据字段说明:
-- id: POI唯一标识
-- name: 景点名称
-- location: 经纬度字符串，格式为"经度,纬度"(如"114.365446,30.561506")
-- address: 地址
-- business_area: 所属商圈
-- city: 所在城市
-- type: POI类型，分号分隔的层级(如"科教文化服务;博物馆;博物馆")
-- alias: 别名
-- photo: 图片URL(字符串，可能是单个URL或多个逗号分隔的URL，也可能为空)
-- cost: 费用信息(可能为空列表)
-- opentime2: 详细开放时间描述
-- rating: 评分(字符串，如"4.9"，可能为空)
+要求：
+1. name 必须原样返回，不得改写、增删字
+2. 只能使用提供的 type、alias、business_area、opentime2 信息，不得编造未提供的门票价格、历史年代、荣誉称号或设施
+3. 不要输出地址和经纬度
+4. 每个输入景点都必须有一条输出，不要遗漏
+5. 语气客观、简洁，突出类别特色和开放时间要点
 
-字段映射规则(必须严格遵守):
-1. name: 直接使用原始 name
-2. address: 直接使用原始 address
-3. location: 将"经度,纬度"字符串拆分为 location 对象，longitude=经度, latitude=纬度，均为数值类型
-4. poi_id: 使用原始 id
-5. category: 取原始 type 最后一级作为类别(如"博物馆")
-6. visit_duration: 根据POI类型推断建议游览时长(分钟)，如博物馆/纪念馆120、公园90、寺庙60等
-7. rating: 将字符串评分转为数值(如"4.9"→4.9)，为空时填null
-8. ticket_price: 优先从 cost 字段提取(元)；cost 为空时根据景点知名度合理估计，免费景点填0
-9. photos: 从 photo 字段提取图片URL组成字符串列表(逗号分隔时拆分)；photo 为空时填空列表
-10. image_url: 取 photo 字段的第一个URL；无图片时填null
-11. description: 用一句话概括景点特色，可结合 type、alias、business_area 等信息，并附上关键开放时间(opentime2)要点
-12. 只保留真正适合旅游的景点，过滤掉商场、写字楼、住宅等非景点数据
-13. 不得编造原始数据中不存在的名称、地址或经纬度
-14. 如果景点名称重复或者大部分重复，可以合理删减重复项，保留一个代表项
-
-城市: {city}
-用户偏好: {preferences}
-
-POI详情数据:
-{raw_data}"""
+景点数据：
+{json.dumps(items, ensure_ascii=False)}"""
 
 
 # ============ RAG 检索节点 ============

@@ -22,6 +22,9 @@ IO_CONCURRENCY = 3
 DETAIL_FETCH_RETRIES = 2
 DETAIL_RETRY_DELAY = 1.0  # 秒
 
+# 景点描述生成超时（秒）：失败/超时只降级为模板，不拖慢关键路径
+ATTRACTION_DESC_TIMEOUT = 60.0
+
 # 搜索 / 酒店
 POI_TOP_K = 1
 HOTEL_SEARCH_RADIUS = "3000"

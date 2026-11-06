@@ -22,7 +22,7 @@ _agent_instance = None
 class TravelPlanAgent:
     def __init__(self):
         self.llm = get_llm()
-        # RAG / 评估等轻量任务走快模型；未配置 OPENAI_FAST_MODEL_ID 时与 self.llm 同一实例
+        # RAG / 评估 / 景点描述等轻量任务走快模型；未配置 OPENAI_FAST_MODEL_ID 时与 self.llm 同一实例
         self.fast_llm = get_fast_llm()
         self.mcp_client = get_amap_mcp_client()
         self.mcp_tools = get_amap_mcp_tools()
@@ -34,7 +34,7 @@ class TravelPlanAgent:
         workflow.add_node("attraction_tool_node",
                           partial(attraction.attraction_tool_node, llm=self.llm, tools=self.mcp_tools))
         workflow.add_node("attraction_enrich_node",
-                          partial(attraction.attraction_enrich_node, llm=self.llm, tools=self.mcp_tools),
+                          partial(attraction.attraction_enrich_node, llm=self.fast_llm, tools=self.mcp_tools),
                           retry_policy=RetryPolicy(max_attempts=NODE_RETRY_ATTEMPTS))
         workflow.add_node("rag_info_node",
                           partial(rag.rag_info_node, llm=self.fast_llm, tools=self.mcp_tools),

@@ -85,6 +85,18 @@ const steps = [
   { icon: '📋', label: '生成计划', nodes: ['plan_node'] },
 ]
 
+// 节点所属阶段（与 steps 顺序一致），用于保证进度只进不退
+const nodeStep: Record<string, number> = {
+  attraction_tool_node: 0,
+  rag_info_node: 0,
+  attraction_enrich_node: 0,
+  weather_tool_node: 1,
+  hotel_tool_node: 2,
+  hotel_enrich_node: 2,
+  plan_node: 3,
+  evaluation_node: 3,
+}
+
 const nodeMilestones: { node: string; pct: number }[] = [
   { node: 'attraction_tool_node', pct: 10 },
   { node: 'rag_info_node', pct: 25 },
@@ -115,15 +127,14 @@ const progress = reactive<{ percent: number; current: string; currentNode: strin
 })
 const logs = ref<{ level: 'info' | 'warn' | 'success'; text: string }[]>([])
 const nodeDone = new Set<string>()
+// 已到达的最高阶段：并行分支或 RAG 回搜可能带来更早阶段的事件，届时直接忽略
+let reachedStep = -1
 let abortCtrl: AbortController | null = null
 
 const activeStep = computed(() => {
   const node = progress.currentNode
   if (!node) return -1
-  for (let i = 0; i < steps.length; i++) {
-    if (steps[i].nodes.includes(node)) return i
-  }
-  return -1
+  return nodeStep[node] ?? -1
 })
 
 function pushLog(level: 'info' | 'warn' | 'success', text: string) {
@@ -133,11 +144,16 @@ function pushLog(level: 'info' | 'warn' | 'success', text: string) {
 
 function onStreamEvent(ev: StreamEvent) {
   switch (ev.type) {
-    case 'node_start':
+    case 'node_start': {
+      const step = nodeStep[ev.node] ?? -1
+      // 已进入更靠后的阶段时，忽略前面阶段的事件，避免进度回退
+      if (step >= 0 && step < reachedStep) break
+      if (step > reachedStep) reachedStep = step
       progress.currentNode = ev.node
       progress.current = ev.label || nodeLabels[ev.node] || ev.node
       pushLog('info', progress.current)
       break
+    }
     case 'node_end': {
       nodeDone.add(ev.node)
       steps.forEach((s, i) => {
@@ -146,7 +162,7 @@ function onStreamEvent(ev: StreamEvent) {
         }
       })
       for (const m of nodeMilestones) {
-        if (m.node === ev.node) progress.percent = m.pct
+        if (m.node === ev.node) progress.percent = Math.max(progress.percent, m.pct)
       }
       break
     }
@@ -179,6 +195,7 @@ async function onSubmit() {
   progress.currentNode = ''
   progress.stepDone = [false, false, false, false]
   nodeDone.clear()
+  reachedStep = -1
   logs.value = []
   abortCtrl = new AbortController()
 
