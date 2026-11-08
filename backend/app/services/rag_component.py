@@ -45,17 +45,50 @@ def get_vector_store() -> Chroma:
     return _vector_store
 
 
-async def aretrieve(query: str, k: int = RAG_TOP_K, city: Optional[str] = None):
-    """异步检索；city 非空时把 metadata 过滤下推到 Chroma
+async def aretrieve(
+    query: str,
+    k: int = RAG_TOP_K,
+    city: Optional[str] = None,
+    session_id: Optional[str] = None,
+):
+    """异步检索；把 city 与数据归属过滤下推到 Chroma。
+
+    过滤规则：
+    - 有 session_id：管理端当前城市内容 + 当前会话自己的全部 user 内容
+      （用户自己的笔记不按城市过滤，避免上传时没填城市就检索不到）；
+    - 无 session_id：只召回管理端当前城市内容，避免把其他会话的私有上传带进规划。
 
     langchain-chroma 没有真正的异步实现，asimilarity_search 内部是 run_in_executor
     线程池卸载，不会阻塞事件循环，因此无需自己再写 to_thread。
 
     参数名必须是 filter=（写成 where= 会在 __query_collection 里与位置参数冲突报
-    TypeError）。{"city": x} 是 {"city": {"$eq": x}} 的简写；必须保留 if 判断，
-    空字符串会匹配不到任何文档。
+    TypeError）；空字符串不传过滤条件，否则匹配不到任何文档。
     """
-    kwargs = {"k": k}
-    if city:
-        kwargs["filter"] = {"city": city}
-    return await get_vector_store().asimilarity_search(query, **kwargs)
+    if session_id:
+        user_clause = {
+            "$and": [
+                {"scope": {"$eq": "user"}},
+                {"owner_id": {"$eq": session_id}},
+            ]
+        }
+        if city:
+            admin_clause = {
+                "$and": [
+                    {"scope": {"$eq": "admin"}},
+                    {"city": {"$eq": city}},
+                ]
+            }
+        else:
+            admin_clause = {"scope": {"$eq": "admin"}}
+        where = {"$or": [admin_clause, user_clause]}
+    elif city:
+        where = {
+            "$and": [
+                {"scope": {"$eq": "admin"}},
+                {"city": {"$eq": city}},
+            ]
+        }
+    else:
+        where = {"scope": {"$eq": "admin"}}
+
+    return await get_vector_store().asimilarity_search(query, k=k, filter=where)

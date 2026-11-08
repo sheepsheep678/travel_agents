@@ -16,6 +16,7 @@ def _add_set(existing: Optional[set], new: Optional[set]) -> set:
 # 图的状态
 class PlannerState(TypedDict):
     city: str
+    session_id: str
     start_date: str
     end_date: str
     travel_days: int
@@ -46,6 +47,7 @@ def initial_state() -> dict:
     """构建 PlannerState 的初始字典（各节点填充/消费前先置默认值）"""
     return {
         "city": "",
+        "session_id": "",
         "start_date": "",
         "end_date": "",
         "travel_days": 1,

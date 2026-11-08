@@ -85,6 +85,15 @@ class Settings(BaseSettings):
     # MD5文件路径
     md5_path: str = _DEFAULT_MD5_PATH
 
+    # 知识库上传（用户/管理端）
+    knowledge_max_file_mb: int = 10
+    knowledge_max_text_chars: int = 20000
+    knowledge_max_pdf_pages: int = 50
+    knowledge_admin_token: str = ""
+    knowledge_vlm_model: str = ""       # 为空则禁用图片解析
+    knowledge_chunk_size: int = 500
+    knowledge_chunk_overlap: int = 50
+
     # 日志配置
     log_level: str = "INFO"
 

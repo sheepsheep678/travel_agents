@@ -1,36 +1,62 @@
 # 旅迹智绘 · Travel-agents
 
-**旅迹智绘** 是基于 **LangGraph 多智能体工作流** 的 AI 旅行规划系统：用户在手账翻书式首页选定城市、日期与偏好后，Agent 并行调用高德地图 MCP 工具与本地 RAG 知识库，获取真实景点 / 酒店 / 天气数据，经「规划 → 评估 → 反思修订」循环生成包含每日行程、餐饮、住宿、预算的完整旅行计划，并通过 SSE 实时推送各节点进度。
+**旅迹智绘** 是一个基于 **LangGraph 多智能体工作流** 的 AI 旅行规划系统。你可以翻开手账选一座城、写下日期与偏好，也可以先和 AI 聊聊想法；确认之后，Agent 会并行调用高德地图 MCP 与本地知识库，拿到真实的景点、酒店和天气数据，再通过「规划 → 评估 → 反思修订」循环，生成一份包含每日行程、餐饮、住宿与预算的完整旅行计划，并通过 SSE 实时推送生成进度。
 
 ## 📸 界面预览
 
-| 首页 · 手账选城 | 翻书动画 · 切换城市 |
+| 首页 · 把一座城写成一页旅程 | 快速开始 · 手账翻书选城 |
 | :---: | :---: |
-| ![首页](pic/首页.png) | ![翻页](pic/翻页.png) |
+| ![首页](pic/首页.png) | ![快速开始](pic/快速开始.png) |
 
-| 翻到下一座城 | 规划进度 · SSE 实时反馈 |
+| 翻书动画 · 切换城市 | 翻到下一座城 |
 | :---: | :---: |
-| ![下一页](pic/下一页.png) | ![开始规划](pic/开始规划.png) |
+| ![翻页](pic/翻页.png) | ![下一页](pic/下一页.png) |
 
-| 规划结果 · 概览 / 预算 | 规划结果 · 路线地图 | 规划结果 · 每日行程 |
-| :---: | :---: | :---: |
-| ![结果概览](pic/结果.png) | ![路线地图](pic/路线.png) | ![每日行程](pic/行程.png) |
+| AI 对话 · 边聊边定方向 | 知识库 · 上传自己的攻略 |
+| :---: | :---: |
+| ![AI 对话](pic/AI对话.png) | ![上传知识库](pic/上传知识库.png) |
+
+| 规划进度 · SSE 实时反馈 | 规划结果 · 概览与预算 |
+| :---: | :---: |
+| ![开始规划](pic/开始规划.png) | ![结果概览](pic/结果.png) |
+
+| 规划结果 · 路线地图 | 规划结果 · 每日行程 |
+| :---: | :---: |
+| ![路线地图](pic/路线.png) | ![每日行程](pic/行程.png) |
 
 ## ✨ 功能特性
 
-**前端交互**
-- **手账翻书式首页**：11 座城市（北京 / 上海 / 广州 / 杭州 / 西安 / 成都 / 重庆 / 长沙 / 青岛 / 厦门 / 南京）配手绘插画，纯 CSS 3D + `requestAnimationFrame` 弹簧动画实现真实翻页效果，支持拖拽 / 键盘 / 点击城市直达
-- **SSE 实时进度**：规划过程中以「正在为你书写行程…」进度面板展示节点级进度、步骤打勾与日志流，心跳保活、断连自动取消
-- **规划结果页**：行程概览、预算明细、路线地图（高德 JS API 2.0，景点/酒店/餐饮分色标注 + 当日景点连线）、每日行程时间线（景点可排序 / 删除）、天气信息
-- **行程导出**：一键导出 PDF / PNG
+### 🗺 站点与入口
 
-**后端 Agent**
-- **多源并行检索**：景点搜索、天气查询、RAG 知识库检索三路并行，景点详情并发拉取（信号量限流 + 自动重试）
-- **HyDE 知识库检索**：LLM 先生成假设性答案文档再做向量检索，命中攻略类语料；检索出的必玩景点未被工具覆盖时自动触发**补搜循环**
-- **真实数据锚点选酒店**：以景点坐标为锚点做周边 3km 酒店搜索，Haversine 公式计算「距景点约 X km」
-- **门控汇聚**：`plan_gate_node` 统一汇聚三条并行分支，数据齐备才放行规划节点，避免中间态提前规划
-- **评估反思循环**：评估节点做「确定性硬校验（天数 / 时长 / 路线衔接）+ LLM 合理性评估」，不合格打回规划节点修订，最多 2 轮
-- **防幻觉设计**：LLM 只输出计划框架（名称引用），景点 / 酒店 / 天气 / 日期等详情由系统按名称确定性回填，空景点日兜底补填
+- **沉浸式首页**：牛皮纸手账视觉、叠放的旅行明信片与热门城市直达入口，一眼看清「快速开始」和「AI 对话」两种开始方式。
+- **快速开始**：11 座城市（北京 / 上海 / 广州 / 杭州 / 西安 / 成都 / 重庆 / 长沙 / 青岛 / 厦门 / 南京）配手绘城市插画，纯 CSS 3D + `requestAnimationFrame` 弹簧动画实现真实翻书效果，支持拖拽、键盘与点击城市直达。
+- **AI 对话**：像聊天一样说出目的地、天数、同行人和偏好，支持多会话管理、流式回复、停止与重新生成；聊清楚之后可一键带着已确定的信息进入快速开始。
+- **跨入口衔接**：首页城市链接、对话页整理出的城市与偏好都会自动预填到快速开始表单，生成完成后再进入结果页，全程不需要重复填写。
+
+### ✍️ 规划与结果
+
+- **SSE 实时进度**：生成过程中以「正在为你书写行程…」进度面板展示节点级进度、步骤打勾与日志流，心跳保活，随时可以取消。
+- **结果概览**：城市、日期、天数、天气与预算总览，门票 / 酒店 / 餐饮 / 交通分项明细。
+- **路线地图**：高德地图 JS API 2.0 渲染，景点、酒店、餐饮分色标注，并按天绘制景点连线。
+- **每日行程**：时间线展示每天的景点、餐饮、住宿与天气，景点可排序、删除后重新计算。
+- **行程导出**：一键导出 PDF / PNG，方便保存与分享。
+
+### 📚 知识库
+
+- **上传自己的旅行资料**：支持粘贴文本，或上传 **MD / TXT / PDF / 图片（PNG / JPG / WEBP）**；图片会经 Qwen-VL 转写为 Markdown 后再入库。
+- **资料管理**：查看已上传资料的标题、预览、切块数量与城市，可随时删除；重复内容按内容指纹自动去重。
+- **隐私隔离**：上传内容保存在 Chroma 中，按浏览器本地会话隔离，只有自己能看到和检索。
+- **面向旅行的切块策略**：Markdown 按标题分节，表格逐行保留表头，`A→B→C` 路线行保持完整，避免把一条路线或一张表格切碎。
+- **参与规划**：生成行程时，当前城市的官方攻略语料与你上传的资料会一起被检索；检索出的必玩景点若未被地图工具覆盖，会自动触发补搜。
+
+### 🤖 Agent 能力
+
+- **多源并行检索**：景点搜索、天气查询、RAG 知识库检索三路并行，景点详情并发拉取（信号量限流 + 自动重试）。
+- **HyDE 知识库检索**：LLM 先生成假设性答案文档再做向量检索，更容易命中攻略类语料；检索出的景点名未被工具覆盖时自动补搜。
+- **真实数据锚点选酒店**：以景点坐标为锚点做周边 3km 酒店搜索，用 Haversine 公式计算「距景点约 X km」。
+- **门控汇聚**：`plan_gate_node` 统一汇聚并行分支，景点 / 酒店 / 天气 / 知识库数据齐备后才放行规划，避免中间态提前规划。
+- **评估反思循环**：评估节点先做确定性硬校验（天数、每日景点、游览总时长、住宿），再交给 LLM 做合理性评估；不合格打回规划节点修订，最多 2 轮。
+- **防幻觉设计**：LLM 只输出计划框架与名称引用，景点、酒店、天气、日期等详情由系统按名称从原始数据确定性回填；未知名称跳过，空景点日按关键词或评分兜底。
 
 ## 🏗 系统架构
 
@@ -58,31 +84,36 @@ graph TD
 ```
 
 **关键设计**：
-- **门控节点** `plan_gate_node`：三条并行分支全部汇聚到此，通过 `is_plan_ready()` 判定数据齐备（景点 / 酒店 / 天气 / RAG 均就绪且酒店轮次追上搜索轮次）后才放行规划，未齐备则本轮直接 END（剩余分支完成后会再次触发门控）
-- 状态字段使用自定义 **reducer**（set 并集 / list 累积）支持多轮补搜数据叠加
-- 关键节点（RAG / 规划 / 评估 / 景点结构化）配置 `RetryPolicy` 应对 LLM 偶发失败
+
+- **门控节点** `plan_gate_node`：三条并行分支全部汇聚到此，通过 `is_plan_ready()` 判定数据齐备后才放行规划；未齐备时本轮直接 END，剩余分支完成后会再次触发门控。
+- **状态 reducer**：景点名 / 知识库景点名使用集合并集，检索结果、酒店结果、历史计划等使用列表累加，支持多轮补搜与修订叠加而不是覆盖。
+- **知识库过滤下推**：城市语料与用户上传资料在 Chroma 查询阶段就按 metadata 过滤，避免把其他城市的资料或他人的私有资料带进规划。
+- **可靠性**：关键节点（RAG / 规划 / 评估 / 景点结构化）配置 `RetryPolicy` 应对 LLM 偶发失败；结构化输出失败时回退到确定性模板。
 
 ## 🛠 技术栈
 
 | 层 | 技术 |
 |---|---|
 | Agent 编排 | LangGraph 1.x、LangChain 1.x |
-| 大模型 | LangChain `init_chat_model`（OpenAI 兼容接口，默认阿里云 DashScope 通义千问，可换任意兼容模型） |
+| 大模型 | LangChain `init_chat_model`（OpenAI 兼容接口，默认阿里云百炼 DashScope 通义千问，可替换任意兼容模型） |
 | 工具接入 | 高德地图 MCP（SSE 传输） |
-| RAG | Chroma、HyDE、DashScope text-embedding |
-| 后端 | FastAPI、Uvicorn、SSE（`astream_events`） |
-| 前端 | Vue 3、Vite、TypeScript、Ant Design Vue、高德地图 JS API 2.0、jspdf / html2canvas、CSS 3D 翻书动效 |
+| RAG | Chroma 本地持久化、HyDE、DashScope Embedding |
+| 知识库解析 | Markdown / TXT、pypdf、DashScope Qwen-VL 图片转写 |
+| 后端 | FastAPI、Uvicorn、SSE（`astream_events`）、pydantic-settings |
+| 前端 | Vue 3、Vue Router、Vite、TypeScript、Ant Design Vue、高德地图 JS API 2.0、jspdf / html2canvas、CSS 3D 翻书动效 |
 | 可观测 | LangSmith 追踪（可选） |
 
 ## 🚀 快速开始
 
 ### 环境要求
+
 - Python ≥ 3.11
 - Node.js ≥ 18
-- 高德开放平台 API Key（后端 MCP 与前端 Web JS Key）
+- 高德开放平台 API Key（服务端 MCP Key + 前端 Web JS Key 两把）
 - 阿里云百炼（DashScope）API Key
 
 ### 1. 克隆项目并安装后端依赖
+
 ```bash
 git clone https://github.com/sheepsheep678/travel_agents.git
 cd travel_agents
@@ -95,7 +126,8 @@ pip install -r requirements.txt
 ```
 
 ### 2. 配置环境变量
-在项目根目录创建 `.env`，按下表填写：
+
+在项目根目录创建 `.env`：
 
 | 变量 | 说明 |
 |---|---|
@@ -104,26 +136,38 @@ pip install -r requirements.txt
 | `CORS_ORIGINS` | 允许的跨域来源，逗号分隔 |
 | `OPENAI_API_KEY` | DashScope API Key（OpenAI 兼容模式） |
 | `OPENAI_BASE_URL` | `https://dashscope.aliyuncs.com/compatible-mode/v1` |
-| `OPENAI_MODEL_ID` | 模型 ID，如 `qwen3.7-max` |
-| `OPENAI_TIMEOUT` | LLM 请求超时（秒），建议 ≥ `120` |
+| `OPENAI_MODEL_ID` | 主模型 ID，用于行程规划 |
+| `OPENAI_FAST_MODEL_ID` | 快模型 ID，用于 RAG / 评估 / 景点描述等轻量任务，留空回退主模型 |
+| `OPENAI_TIMEOUT` / `OPENAI_PLAN_TIMEOUT` | 快模型 / 主模型单次请求超时（秒） |
 | `EMBEDDING_MODEL_NAME` | 向量模型，如 `text-embedding-v4` |
 | `AMAP_API_KEY` | 高德开放平台 Key（后端 MCP 使用） |
 | `VITE_AMAP_WEB_JS_KEY` | 高德 JS API Key（结果页地图），**写入 `frontend/.env`** |
+| `KNOWLEDGE_VLM_MODEL` | 图片知识库转写模型（如 Qwen-VL）；留空则不支持图片上传 |
+| `KNOWLEDGE_ADMIN_TOKEN` | 管理端知识库上传令牌（可选） |
+| `KNOWLEDGE_MAX_FILE_MB` / `KNOWLEDGE_MAX_TEXT_CHARS` | 单文件大小 / 文本长度上限，默认 `10` MB / `20000` 字 |
 | `UNSPLASH_ACCESS_KEY` / `UNSPLASH_SECRET_KEY` | Unsplash 图片服务（可选） |
 | `LANGSMITH_TRACING` / `LANGSMITH_API_KEY` | LangSmith 追踪（可选） |
 
 `.env` 模板：
+
 ```dotenv
 HOST=0.0.0.0
 PORT=8000
 LOG_LEVEL=INFO
 CORS_ORIGINS=http://localhost:5173,http://localhost:3000
+
 OPENAI_API_KEY=sk-xxxx
 OPENAI_BASE_URL=https://dashscope.aliyuncs.com/compatible-mode/v1
-OPENAI_MODEL_ID=qwen3.7-max
-OPENAI_TIMEOUT=120
+OPENAI_MODEL_ID=qwen3.8-max
+OPENAI_FAST_MODEL_ID=qwen3.8-flash
+OPENAI_TIMEOUT=90
+OPENAI_PLAN_TIMEOUT=180
 EMBEDDING_MODEL_NAME=text-embedding-v4
+
 AMAP_API_KEY=xxxx
+KNOWLEDGE_VLM_MODEL=
+KNOWLEDGE_ADMIN_TOKEN=
+
 UNSPLASH_ACCESS_KEY=
 UNSPLASH_SECRET_KEY=
 LANGSMITH_TRACING=false
@@ -132,18 +176,32 @@ LANGSMITH_API_KEY=
 
 > 💡 向量库目录 `chroma_dir` / `md5_path` 已按代码位置自动推导到 `backend/app/api/`（`chroma_db/` / `md5.text`），无需手动改绝对路径；如需自定义仍可通过同名环境变量覆盖。
 
-### 3. 启动后端（项目根目录执行）
+前端还需要在 `frontend/.env` 中配置地图 Key：
+
+```dotenv
+VITE_AMAP_WEB_JS_KEY=你的高德Web端JS API Key
+```
+
+### 3. 启动后端（在仓库根目录执行）
+
 ```bash
 python -m backend.app.api.main
 ```
-启动时会自动连接高德 MCP 并加载工具，默认监听 `8000` 端口。加 `--reload` 可热重载。
+
+启动时会先校验配置并连接高德 MCP，默认监听 `8000` 端口。需要热重载时使用：
+
+```bash
+uvicorn backend.app.api.main:app --reload
+```
 
 ### 4. 启动前端
+
 ```bash
 cd frontend
 npm install
 npm run dev
 ```
+
 访问 `http://localhost:5173` 即可使用。
 
 ## 🔌 API 说明
@@ -153,22 +211,29 @@ npm run dev
 | GET | `/api/health` | 健康检查（含 MCP 就绪状态） |
 | POST | `/api/trip/plan` | 一次性生成旅行计划 |
 | POST | `/api/trip/plan/stream` | SSE 流式生成，实时推送节点进度 |
+| POST | `/api/knowledge/upload` | 上传文本 / 文件到当前会话知识库 |
+| GET | `/api/knowledge/list` | 列出当前会话已上传的资料 |
+| DELETE | `/api/knowledge/{doc_id}` | 删除当前会话的资料 |
+| POST | `/api/knowledge/admin/upload` | 管理端上传城市攻略（需 `X-Admin-Token`） |
 
-**请求体示例**：
+**规划请求体示例**：
+
 ```json
 {
   "city": "青岛",
   "start_date": "2026-08-20",
   "end_date": "2026-08-22",
   "travel_days": 3,
-  "transportation": "自驾",
-  "accommodation": "酒店",
-  "preferences": ["风景", "啤酒"],
-  "free_text_input": "希望旅行氛围浪漫、轻松、慢节奏"
+  "transportation": "公共交通",
+  "accommodation": "舒适型酒店",
+  "preferences": ["自然风光", "美食"],
+  "free_text_input": "希望旅行氛围浪漫、轻松、慢节奏",
+  "session_id": "当前浏览器会话标识"
 }
 ```
 
 **SSE 事件协议**：
+
 ```jsonc
 {"type": "node_start", "node": "weather_tool_node", "label": "正在查询天气..."}
 {"type": "node_end",   "node": "weather_tool_node", "payload": {"weather_count": 4}}
@@ -177,68 +242,93 @@ npm run dev
 {"type": "done", "success": true, "message": "生成成功", "data": {"...": "TripPlan"}}
 ```
 
-## 📚 RAG 知识库
+## 📚 知识库
+
+### 内置城市攻略
 
 11 座城市的攻略语料位于 `backend/app/api/data/*.txt`，向量化后存入 Chroma 持久化目录 `backend/app/api/chroma_db/`（集合名 `knowledge_base`，余弦距离）。新增或更新语料后重建向量库：
 
 ```bash
-# 脚本会按自身位置自动定位 data 目录，在项目根目录执行即可
+# 在仓库根目录执行
 python -m backend.app.api.rag_file_uploader
 ```
 
-上传脚本按文件 MD5 去重，已入库文件自动跳过；若 Chroma 集合为空（首次入库或重建向量库），脚本会自动忽略 MD5 账本执行全量入库。切分策略为 500 字符 / 50 字符重叠，按中文标点优先断句。
+上传脚本按文件 MD5 去重，已入库文件自动跳过；若 Chroma 集合为空（首次入库或重建向量库），脚本会自动执行全量入库。切分策略为 500 字符 / 50 字符重叠，按中文标点优先断句。
 
-> ⚠️ **入库后必须重启后端**。Chroma 的索引按持久化目录缓存在**进程内**，后端运行期间用另一个进程执行入库脚本，磁盘数据虽已更新但后端不会重新加载——此时检索会少返回结果，或直接抛 `InternalError: Error finding id`。停掉后端再入库（或入库后立即重启）即可。
+> ⚠️ **入库后必须重启后端**。Chroma 的索引按持久化目录缓存在进程内，后端运行期间用另一个进程执行入库脚本，磁盘数据虽已更新但后端不会重新加载——此时检索会少返回结果，或直接抛 `InternalError: Error finding id`。停掉后端再入库（或入库后立即重启）即可。
+
+### 用户上传
+
+对话页右上角的「知识库」抽屉可以随时上传资料：
+
+- **格式**：Markdown、TXT、PDF、PNG / JPG / WEBP 图片，也可以直接粘贴文本。
+- **可选信息**：标题与城市；填写城市后，该资料会优先参与对应城市的规划检索。
+- **切块**：Markdown 按标题分节；表格逐行切块并重复表头；路线行按箭头保持完整；短段落自动合并到接近目标块大小。
+- **去重与隔离**：同一内容重复上传会直接返回已有记录；资料按浏览器本地会话隔离，仅本人可见。
+- **生效方式**：生成行程时与内置城市语料一起检索，无需重启后端。
 
 ## 📁 项目结构
 
-```
+```text
 travel_agents/
 ├── backend/app/
 │   ├── api/
-│   │   ├── data/                  # 城市攻略语料（txt，11 城）
-│   │   ├── main.py                # FastAPI 入口（健康检查/规划/流式规划）
-│   │   ├── rag_file_uploader.py   # 知识库向量化上传脚本
-│   │   ├── chroma_db/             # Chroma 向量库（本地持久化目录）
-│   │   └── md5.text               # 已入库文件 MD5 去重记录
+│   │   ├── data/                    # 城市攻略语料（txt，11 城）
+│   │   ├── main.py                  # FastAPI 入口（健康检查 / 规划 / 流式规划）
+│   │   ├── knowledge.py             # 知识库上传 / 列表 / 删除 API
+│   │   ├── rag_file_uploader.py     # 内置语料向量化入库脚本
+│   │   ├── migrate_admin_metadata.py# 历史知识库 metadata 迁移
+│   │   ├── chroma_db/               # Chroma 向量库（本地持久化目录）
+│   │   └── md5.text                 # 已入库文件 MD5 去重记录
 │   ├── models/
-│   │   ├── request.py             # TripRequest
-│   │   └── response.py            # TripPlan / Attraction / Hotel / Weather 等
+│   │   ├── request.py               # TripRequest
+│   │   ├── response.py              # TripPlan / Attraction / Hotel / Weather 等
+│   │   └── knowledge.py             # 知识库请求 / 响应模型
 │   ├── nodes/
-│   │   ├── attraction.py          # 景点搜索 + 结构化
-│   │   ├── hotel.py               # 酒店搜索 + 解析
-│   │   ├── weather.py             # 天气查询
-│   │   ├── rag.py                 # HyDE 知识库检索
-│   │   ├── plan.py                # 行程规划（结构化输出 + 确定性回填）
-│   │   ├── evaluation.py          # 评估反思（硬校验 + LLM 评估）
-│   │   ├── gate.py                # 门控汇聚 / 路由
-│   │   ├── llm.py                 # LLM / Embedding 单例
-│   │   ├── utils.py               # MCP 结果解析 / 距离 / 日期工具
+│   │   ├── attraction.py            # 景点搜索 + 结构化
+│   │   ├── hotel.py                 # 酒店搜索 + 解析
+│   │   ├── weather.py               # 天气查询
+│   │   ├── rag.py                   # HyDE 知识库检索
+│   │   ├── plan.py                  # 行程规划（结构化输出 + 确定性回填）
+│   │   ├── evaluation.py            # 评估反思（硬校验 + LLM 评估）
+│   │   ├── gate.py                  # 门控汇聚 / 路由
+│   │   ├── llm.py                   # LLM / Embedding 单例
+│   │   ├── utils.py                 # MCP 结果解析 / 距离 / 日期工具
 │   │   └── tools/
-│   │       └── amap_mcp_servers.py    # 高德 MCP 客户端（SSE）
+│   │       └── amap_mcp_servers.py  # 高德 MCP 客户端（SSE）
 │   ├── services/
-│   │   ├── config.py              # pydantic-settings 配置
-│   │   ├── rag_component.py       # Chroma 异步检索
-│   │   └── travel_plan_agent.py   # LangGraph 图定义（核心）
-│   ├── state.py                   # PlannerState 状态定义与 reducer
-│   ├── constants.py               # 节点文案 / 轮次 / 并发等常量
-│   └── prompts.py                 # 各节点提示词
-├── frontend/                      # Vue3 + Vite 前端
-│   └── src/
-│       ├── views/                 # Home（手账选城）/ Result（结果页）
-│       ├── components/sketchbook/ # 翻书 Book / 表单 Form / 进度 Progress
-│       ├── assets/sketchbook/     # 11 城手绘插画
-│       ├── data/                  # sketchbookCities（选城配置）
-│       ├── services/api.ts        # 后端接口与 SSE 消费
-│       ├── store.ts               # Pinia 状态（跨页传递计划）
-│       └── types/                 # TS 类型定义
-├── pic/                           # README 截图
+│   │   ├── config.py                # pydantic-settings 配置
+│   │   ├── rag_component.py         # Chroma 单例与异步检索
+│   │   ├── knowledge_extractors.py  # MD / TXT / PDF / 图片内容抽取
+│   │   ├── knowledge_service.py     # 切块、去重与 Chroma 写入
+│   │   └── travel_plan_agent.py     # LangGraph 图定义（核心）
+│   ├── state.py                     # PlannerState 状态定义与 reducer
+│   ├── constants.py                 # 节点文案 / 轮次 / 并发等常量
+│   └── prompts.py                   # 各节点提示词
+├── frontend/                        # Vue 3 + Vite 前端
+│   ├── src/
+│   │   ├── views/                   # Landing / QuickStart / Chat / Result
+│   │   ├── components/
+│   │   │   ├── site/                # 站点页头 / 页脚 / 纸张纹理 / 印章
+│   │   │   ├── sketchbook/          # 翻书 Book / 表单 Form / 进度 Progress
+│   │   │   └── chat/                # 会话列表 / 消息 / 输入框 / 知识库抽屉
+│   │   ├── composables/             # usePaperTheme（纸张主题）
+│   │   ├── assets/sketchbook/       # 11 城手绘插画
+│   │   ├── data/                    # sketchbookCities（选城配置）
+│   │   ├── services/api.ts          # 后端接口与 SSE 消费
+│   │   ├── store.ts                 # 轻量 reactive store（跨页状态 / 对话持久化）
+│   │   ├── styles/                  # 全局 / 站点 / 翻书样式
+│   │   └── types/                   # TS 类型定义
+│   └── .env                         # VITE_AMAP_WEB_JS_KEY
+├── pic/                             # README 截图
 ├── requirements.txt
 └── .env
 ```
 
 ## 🙏 致谢
+
 - [LangGraph](https://github.com/langchain-ai/langgraph) — 多智能体编排框架
 - [高德开放平台](https://lbs.amap.com/) — 地图与 MCP 服务
-- [阿里云百炼](https://bailian.console.aliyun.com/) — 通义千问模型服务
+- [阿里云百炼](https://bailian.console.aliyun.com/) — 通义千问模型与 Embedding 服务
+- [Chroma](https://www.trychroma.com/) — 本地向量数据库
 - [Threeui](https://threeui.com/) — 手账翻书 3D 动效

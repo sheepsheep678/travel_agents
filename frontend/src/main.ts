@@ -5,6 +5,7 @@ import App from './App.vue'
 import router from './router'
 import './styles/index.css'
 import './styles/sketchbook.css'
+import './styles/site.css'
 
 const app = createApp(App)
 app.use(Antd)

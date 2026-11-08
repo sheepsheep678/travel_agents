@@ -13,6 +13,7 @@ class TripRequest(BaseModel):
     accommodation: str = Field(..., description="住宿偏好", example="经济型酒店")
     preferences: List[str] = Field(default=[], description="旅行偏好标签", example=["历史文化", "美食"])
     free_text_input: Optional[str] = Field(default="", description="额外要求", example="希望多安排一些博物馆")
+    session_id: Optional[str] = Field(default="", description="匿名会话 ID，用于召回该会话上传的知识库内容")
 
     class Config:
         json_schema_extra = {

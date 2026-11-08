@@ -17,6 +17,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
+from backend.app.api.knowledge import router as knowledge_router
 from backend.app.models.request import TripRequest
 from backend.app.models.response import TripPlanResponse
 from backend.app.state import initial_state
@@ -65,6 +66,8 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+app.include_router(knowledge_router)
+
 
 class HealthResponse(BaseModel):
     """健康检查响应"""
@@ -79,6 +82,7 @@ def _build_planner_state(req: TripRequest) -> dict:
     state = initial_state()
     state.update({
         "city": req.city,
+        "session_id": req.session_id or "",
         "start_date": req.start_date,
         "end_date": req.end_date,
         "travel_days": req.travel_days,

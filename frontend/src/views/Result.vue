@@ -5,7 +5,7 @@
       <div class="empty-ic">🧳</div>
       <h2>还没有行程数据</h2>
       <p>先去填写你的旅行偏好，让旅迹智绘为你生成一份专属计划吧</p>
-      <a-button type="primary" size="large" @click="$router.push('/')">去规划 →</a-button>
+      <a-button type="primary" size="large" @click="$router.push('/quick-start')">去规划 →</a-button>
     </div>
 
     <template v-else>
@@ -30,7 +30,7 @@
             <a-button @click="exportPDF">
               <template #icon><FilePdfOutlined /></template>PDF
             </a-button>
-            <a-button @click="$router.push('/')">重新规划</a-button>
+            <a-button @click="$router.push('/quick-start')">重新规划</a-button>
           </div>
         </div>
       </header>
@@ -223,7 +223,7 @@
             </div>
           </section>
 
-          <footer class="foot">✨ 由旅迹智绘绘制 · 多智能体协作</footer>
+          <footer class="foot">✨ 由旅迹智绘绘制 · 祝你一路顺风</footer>
         </main>
       </div>
     </template>
@@ -245,7 +245,10 @@ import html2canvas from 'html2canvas'
 import { jsPDF } from 'jspdf'
 import { tripStore } from '../store'
 import { PAPER } from '../constants/theme'
+import { usePaperTheme } from '../composables/usePaperTheme'
 import type { TripPlan, DayPlan, Attraction } from '../types'
+
+usePaperTheme()
 
 // ------- 数据 -------
 const plan = computed<TripPlan | null>(() => tripStore.plan)
@@ -551,9 +554,7 @@ function onScroll() {
 onMounted(() => window.addEventListener('scroll', onScroll, { passive: true }))
 onUnmounted(() => window.removeEventListener('scroll', onScroll))
 
-// 结果页同样套用手账纸墨主题（body 类提供 --paper/--ink 等 token 与弹层主题）
-onMounted(() => document.body.classList.add('sketchbook-mode'))
-onUnmounted(() => document.body.classList.remove('sketchbook-mode'))
+// 结果页同样套用手账纸墨主题（usePaperTheme 提供 --paper/--ink 等 token 与弹层主题）
 </script>
 
 <style scoped>

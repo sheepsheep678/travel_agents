@@ -2,6 +2,8 @@ import glob
 import hashlib
 import logging
 import os
+import re
+from datetime import datetime, timezone
 
 from langchain_community.document_loaders import PyPDFLoader, TextLoader
 from langchain_core.documents import Document
@@ -15,6 +17,18 @@ logger = logging.getLogger(__name__)
 # langchain-chroma 的 add_texts 不切批，会把整批文本一次性交给
 # DashScopeEmbeddings.embed_documents（单次 HTTP 请求）；保守分批更稳，失败时也能定位批次。
 INGEST_BATCH_SIZE = 10
+
+
+def _derive_title(text: str, path: str) -> str:
+    for line in (text or "").splitlines():
+        candidate = line.strip().lstrip("#").strip()
+        if candidate:
+            return candidate[:60]
+    return os.path.splitext(os.path.basename(path))[0] or "管理端资料"
+
+
+def _preview(text: str, limit: int = 120) -> str:
+    return re.sub(r"\s+", " ", text or "").strip()[:limit]
 
 
 def _collection_is_empty() -> bool:
@@ -105,10 +119,38 @@ def build_from_dir(docs_dir: str):
                 docs = load_file(f)
                 if not docs:
                     continue
+                title = _derive_title(docs[0].page_content, f)
+                preview = _preview(docs[0].page_content)
+                source_type = "pdf" if f.lower().endswith(".pdf") else "md"
                 for d in docs:
-                    d.metadata["city"] = city
+                    d.metadata.update({
+                        "city": city,
+                        "scope": "admin",
+                        "owner_id": "admin",
+                        "visibility": "public",
+                        "source_type": source_type,
+                        "doc_id": f"admin:{city}",
+                        "title": title,
+                        "preview": preview,
+                        "chunk_policy_version": "admin_v1",
+                    })
                 # split_documents 会把 metadata 继承给每个 chunk
-                all_docs.extend(splitter.split_documents(docs))
+                chunks = splitter.split_documents(docs)
+                total = len(chunks)
+                created_at = datetime.now(timezone.utc).isoformat()
+                for index, chunk in enumerate(chunks):
+                    chunk.metadata.update({
+                        "chunk_index": index,
+                        "chunk_total": total,
+                        "content_hash": hashlib.sha256(
+                            chunk.page_content.encode("utf-8")
+                        ).hexdigest(),
+                        "created_at": created_at,
+                        "extraction_method": "text",
+                        "block_type": "paragraph",
+                        "section": "",
+                    })
+                all_docs.extend(chunks)
                 pending_md5.append(md5_hex)
             except Exception as e:
                 logger.warning("跳过 %s: %s", f, e)

@@ -2,6 +2,8 @@
   <div class="sketchbook">
     <div class="sketchbook-wash" aria-hidden="true"></div>
 
+    <router-link to="/" class="back-home" aria-label="返回首页">← 返回首页</router-link>
+
     <header class="sb-head">
       <p class="sb-kicker">看看大家都去哪儿</p>
       <h1 class="sb-title">翻开一页 · 遇见一座城</h1>
@@ -39,7 +41,7 @@
 
 <script setup lang="ts">
 import { reactive, ref, computed, watch, onMounted, onUnmounted } from 'vue'
-import { useRouter } from 'vue-router'
+import { useRoute, useRouter } from 'vue-router'
 import { message } from 'ant-design-vue'
 import dayjs, { type Dayjs } from 'dayjs'
 import SketchbookBook from '../components/sketchbook/SketchbookBook.vue'
@@ -47,10 +49,14 @@ import SketchbookForm from '../components/sketchbook/SketchbookForm.vue'
 import SketchbookProgress from '../components/sketchbook/SketchbookProgress.vue'
 import { sketchbookCities } from '../data/sketchbookCities'
 import { streamTripPlan } from '../services/api'
-import { tripStore } from '../store'
+import { getSessionId, tripStore } from '../store'
+import { usePaperTheme } from '../composables/usePaperTheme'
 import type { TripRequest, StreamEvent } from '../types'
 
+usePaperTheme()
+
 const router = useRouter()
+const route = useRoute()
 const cities = sketchbookCities
 const activeIndex = ref(0)
 
@@ -71,6 +77,9 @@ const form = reactive<{
   preferences: ['自然风光', '美食'],
   free_text_input: '希望氛围浪漫轻松、慢节奏',
 })
+
+// 从对话页带过来的 session_id，优先于当前浏览器默认会话 ID
+const prefillSessionId = ref<string | undefined>()
 
 // 当前翻开哪页 = 目的地城市
 watch(activeIndex, (i) => {
@@ -130,6 +139,7 @@ const nodeDone = new Set<string>()
 // 已到达的最高阶段：并行分支或 RAG 回搜可能带来更早阶段的事件，届时直接忽略
 let reachedStep = -1
 let abortCtrl: AbortController | null = null
+let redirectTimer: number | undefined
 
 const activeStep = computed(() => {
   const node = progress.currentNode
@@ -186,6 +196,7 @@ async function onSubmit() {
     accommodation: form.accommodation,
     preferences: form.preferences,
     free_text_input: form.free_text_input,
+    session_id: prefillSessionId.value || getSessionId(),
   }
 
   generating.value = true
@@ -213,7 +224,7 @@ async function onSubmit() {
         tripStore.plan = ev.data ?? null
         pushLog('success', '行程规划完成！')
         message.success('行程规划完成！')
-        window.setTimeout(() => router.push('/result'), 600)
+        redirectTimer = window.setTimeout(() => router.push('/result'), 600)
         return
       }
     }
@@ -237,19 +248,79 @@ function reset() {
   progress.currentNode = ''
 }
 
+/* ------- 跨入口预填（对话页 / 首页城市链接），优先级 prefill > ?city= ------- */
 onMounted(() => {
-  document.body.classList.add('sketchbook-mode')
+  let appliedPrefill = false
+  const p = tripStore.prefill
+  if (p) {
+    appliedPrefill = true
+    prefillSessionId.value = p.session_id
+    if (p.city) {
+      const i = cities.findIndex((c) => c.name === p.city || c.slug === p.city)
+      if (i >= 0) {
+        activeIndex.value = i
+        form.city = cities[i].name
+      }
+    }
+    if (p.start_date && p.end_date) {
+      const s = dayjs(p.start_date)
+      const e = dayjs(p.end_date)
+      if (s.isValid() && e.isValid()) form.dates = [s, e]
+    }
+    if (p.travel_days) form.travel_days = p.travel_days
+    if (p.transportation) form.transportation = p.transportation
+    if (p.accommodation) form.accommodation = p.accommodation
+    if (p.preferences?.length) form.preferences = [...p.preferences]
+    if (typeof p.free_text_input === 'string') form.free_text_input = p.free_text_input
+    tripStore.prefill = null
+  }
+
+  const qCity = typeof route.query.city === 'string' ? route.query.city : ''
+  if (qCity) {
+    if (!appliedPrefill) {
+      const i = cities.findIndex((c) => c.name === qCity || c.slug === qCity)
+      if (i >= 0) {
+        activeIndex.value = i
+        form.city = cities[i].name
+      }
+    }
+    router.replace({ path: '/quick-start' })
+  }
 })
 
 onUnmounted(() => {
-  document.body.classList.remove('sketchbook-mode')
   abortCtrl?.abort()
+  if (redirectTimer) window.clearTimeout(redirectTimer)
 })
 </script>
 
 <style scoped>
 .sketchbook {
   padding-bottom: 56px;
+}
+.back-home {
+  position: fixed;
+  top: 18px;
+  left: 18px;
+  z-index: 120;
+  display: inline-flex;
+  align-items: center;
+  height: 32px;
+  padding: 0 13px;
+  border: 1px solid var(--hairline);
+  border-radius: 999px;
+  background: rgba(236, 231, 220, 0.82);
+  backdrop-filter: blur(6px);
+  -webkit-backdrop-filter: blur(6px);
+  font-size: 12px;
+  letter-spacing: 0.04em;
+  color: var(--ink-soft);
+  text-decoration: none;
+  transition: color 0.2s, border-color 0.2s;
+}
+.back-home:hover {
+  color: var(--ink);
+  border-color: var(--ink);
 }
 .sb-head {
   text-align: center;
@@ -276,5 +347,15 @@ onUnmounted(() => {
   color: var(--ink-soft);
   line-height: 1.7;
   max-width: 560px;
+}
+
+@media (max-width: 560px) {
+  .back-home {
+    top: 12px;
+    left: 12px;
+    height: 28px;
+    padding: 0 10px;
+    font-size: 11px;
+  }
 }
 </style>
