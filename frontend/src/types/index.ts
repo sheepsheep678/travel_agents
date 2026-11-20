@@ -100,7 +100,9 @@ export interface TripRequest {
   accommodation: string
   preferences: string[]
   free_text_input: string
-  /** 匿名会话 ID，用于召回该会话上传的知识库内容 */
+  /** 浏览器匿名用户 ID，用于召回该用户上传的知识库内容 */
+  user_id?: string
+  /** 服务端会话 ID，用于校验归属并作为 Agent checkpoint 的 thread_id */
   session_id?: string
 }
 
@@ -114,6 +116,7 @@ export interface TripPrefill {
   accommodation?: string
   preferences?: string[]
   free_text_input?: string
+  user_id?: string
   session_id?: string
 }
 
@@ -137,17 +140,21 @@ export interface ChatSession {
   messages: ChatMessage[]
   createdAt: number
   updatedAt: number
-}
-
-/** POST /api/chat/stream 的请求体（后端后续按此实现） */
-export interface ChatRequest {
-  session_id?: string
-  message: string
   city?: string
 }
 
+/** POST /api/v1/chat/stream 的请求体 */
+export interface ChatRequest {
+  user_id: string
+  session_id: string
+  message: string
+  city?: string
+  /** 重新生成：后端不会重复写入用户消息，并删除最后一条助手回复 */
+  regenerate?: boolean
+}
+
 /**
- * 对话 SSE 事件（后端后续按此实现）：
+ * 对话 SSE 事件：
  * data: {"type":"token","delta":"..."}
  * data: {"type":"done","session_id":"..."}
  * data: {"type":"error","message":"..."}
@@ -156,6 +163,41 @@ export type ChatStreamEvent =
   | { type: 'token'; delta: string }
   | { type: 'done'; message?: string; session_id?: string }
   | { type: 'error'; message: string }
+
+/* ---------------- 服务端会话 ---------------- */
+
+export interface ServerMessage {
+  id: string
+  role: ChatRole
+  content: string
+  created_at: string
+  status: ChatMessageStatus
+}
+
+export interface ServerSession {
+  id: string
+  user_id: string
+  title: string
+  city: string
+  created_at: string
+  updated_at: string
+  messages: ServerMessage[]
+}
+
+export interface SessionResponse {
+  success: boolean
+  session: ServerSession
+}
+
+export interface SessionListResponse {
+  success: boolean
+  sessions: ServerSession[]
+}
+
+export interface SessionDeleteResponse {
+  success: boolean
+  message: string
+}
 
 /* ---------------- 知识库上传 ---------------- */
 

@@ -25,7 +25,7 @@
       </div>
     </nav>
 
-    <p class="sidebar-foot">对话与知识库记录保存在当前浏览器。</p>
+    <p class="sidebar-foot">对话记录保存在服务端，换设备后仍可继续。</p>
   </aside>
 </template>
 

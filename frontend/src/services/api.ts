@@ -4,14 +4,17 @@ import type {
   ChatStreamEvent,
   KnowledgeListResponse,
   KnowledgeUploadResponse,
+  ServerSession,
+  SessionResponse,
   StreamEvent,
   TripPlanResponse,
   TripRequest,
 } from '../types'
-import { MOCK_CHAT, streamChatMock } from './chatMock'
+
+const API_BASE = '/api/v1'
 
 const http = axios.create({
-  baseURL: '/api',
+  baseURL: API_BASE,
   // Agent 真实调用可能长达 5 分钟，超时宁长勿短
   timeout: 600000,
 })
@@ -22,9 +25,61 @@ export async function generateTripPlan(req: TripRequest, signal?: AbortSignal): 
   return data
 }
 
+/* ---------------- 会话 ---------------- */
+
+/** 校验 user_id + session_id；会话不存在时由后端新建并返回。 */
+export async function ensureSession(
+  userId: string,
+  sessionId?: string | null,
+  title = '',
+  city = '',
+  signal?: AbortSignal,
+): Promise<ServerSession> {
+  const { data } = await http.post<SessionResponse>(
+    '/sessions/ensure',
+    { user_id: userId, session_id: sessionId || null, title, city },
+    { signal },
+  )
+  return data.session
+}
+
+export async function createSession(
+  userId: string,
+  title = '',
+  city = '',
+): Promise<ServerSession> {
+  const { data } = await http.post<SessionResponse>('/sessions', {
+    user_id: userId,
+    title,
+    city,
+  })
+  return data.session
+}
+
+export async function listSessions(userId: string): Promise<ServerSession[]> {
+  const { data } = await http.get<{ success: boolean; sessions: ServerSession[] }>('/sessions', {
+    params: { user_id: userId },
+  })
+  return data.sessions
+}
+
+export async function getSession(sessionId: string, userId: string): Promise<ServerSession> {
+  const { data } = await http.get<SessionResponse>(
+    `/sessions/${encodeURIComponent(sessionId)}`,
+    { params: { user_id: userId } },
+  )
+  return data.session
+}
+
+export async function deleteSession(sessionId: string, userId: string): Promise<void> {
+  await http.delete(`/sessions/${encodeURIComponent(sessionId)}`, {
+    params: { user_id: userId },
+  })
+}
+
 /* ---------------- 知识库上传 ---------------- */
 
-/** 上传文件/文本到当前会话的知识库。不要手动设置 Content-Type，交给浏览器生成 boundary。 */
+/** 上传文件/文本到当前用户的知识库。不要手动设置 Content-Type，交给浏览器生成 boundary。 */
 export async function uploadKnowledge(
   formData: FormData,
   signal?: AbortSignal,
@@ -35,22 +90,22 @@ export async function uploadKnowledge(
   return data
 }
 
-/** 列出当前会话已上传的文档（只返回预览）。 */
+/** 列出当前用户已上传的文档（只返回预览）。 */
 export async function listKnowledge(
-  sessionId: string,
+  userId: string,
   signal?: AbortSignal,
 ): Promise<KnowledgeListResponse> {
   const { data } = await http.get<KnowledgeListResponse>('/knowledge/list', {
-    params: { session_id: sessionId },
+    params: { user_id: userId },
     signal,
   })
   return data
 }
 
-/** 删除当前会话自己上传的文档。 */
-export async function deleteKnowledge(docId: string, sessionId: string): Promise<void> {
+/** 删除当前用户自己上传的文档。 */
+export async function deleteKnowledge(docId: string, userId: string): Promise<void> {
   await http.delete(`/knowledge/${encodeURIComponent(docId)}`, {
-    params: { session_id: sessionId },
+    params: { user_id: userId },
   })
 }
 
@@ -65,11 +120,23 @@ async function* streamSSE<T extends { type: string }>(
 ): AsyncGenerator<T> {
   const res = await fetch(url, {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
+    headers: {
+      'Content-Type': 'application/json',
+      Accept: 'text/event-stream',
+    },
     body: JSON.stringify(body),
     signal,
   })
-  if (!res.ok) throw new Error(`请求失败: ${res.status} ${res.statusText}`)
+  if (!res.ok) {
+    let message = `请求失败: ${res.status} ${res.statusText}`
+    try {
+      const payload = await res.json()
+      message = payload?.message || payload?.detail || message
+    } catch {
+      /* 非 JSON 错误响应 */
+    }
+    throw new Error(message)
+  }
   if (!res.body) throw new Error('当前浏览器不支持流式读取')
 
   const reader = res.body.getReader()
@@ -79,7 +146,8 @@ async function* streamSSE<T extends { type: string }>(
     while (true) {
       const { done, value } = await reader.read()
       if (done) break
-      buf += decoder.decode(value, { stream: true })
+      // sse-starlette 使用 CRLF 分帧；统一成 LF 后再按空行切帧
+      buf = (buf + decoder.decode(value, { stream: true })).replace(/\r\n/g, '\n')
       const frames = buf.split('\n\n')
       buf = frames.pop() ?? '' // 末尾可能是不完整帧，留待下次拼接
       for (const frame of frames) {
@@ -102,20 +170,12 @@ async function* streamSSE<T extends { type: string }>(
  * 流式连接只按"空闲"计时，后端每 10s 有心跳 ping，不会因总时长超时断开。
  */
 export function streamTripPlan(req: TripRequest, signal?: AbortSignal): AsyncGenerator<StreamEvent> {
-  return streamSSE<StreamEvent>('/api/trip/plan/stream', req, signal)
+  return streamSSE<StreamEvent>(`${API_BASE}/trip/plan/stream`, req, signal)
 }
 
 /**
- * AI 对话流式接口。
- *
- * 后端接口约定（尚未实现）：
- *   POST /api/chat/stream
- *   body: { session_id?: string; message: string; city?: string }
- *   SSE: token / done / error（见 types/index.ts 的 ChatStreamEvent）
- *
- * 后端就绪后把 services/chatMock.ts 的 MOCK_CHAT 置为 false 即可切到真实接口。
+ * AI 对话流式接口：后端持久化会话与消息，并通过 SSE 返回 token / done / error。
  */
 export function streamChat(req: ChatRequest, signal?: AbortSignal): AsyncGenerator<ChatStreamEvent> {
-  if (MOCK_CHAT) return streamChatMock(req, signal)
-  return streamSSE<ChatStreamEvent>('/api/chat/stream', req, signal)
+  return streamSSE<ChatStreamEvent>(`${API_BASE}/chat/stream`, req, signal)
 }

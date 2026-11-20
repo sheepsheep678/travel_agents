@@ -48,10 +48,10 @@ import SketchbookBook from '../components/sketchbook/SketchbookBook.vue'
 import SketchbookForm from '../components/sketchbook/SketchbookForm.vue'
 import SketchbookProgress from '../components/sketchbook/SketchbookProgress.vue'
 import { sketchbookCities } from '../data/sketchbookCities'
-import { streamTripPlan } from '../services/api'
-import { getSessionId, tripStore } from '../store'
+import { ensureSession, streamTripPlan } from '../services/api'
+import { chatStore, getUserId, toChatSession, tripStore } from '../store'
 import { usePaperTheme } from '../composables/usePaperTheme'
-import type { TripRequest, StreamEvent } from '../types'
+import type { ServerSession, TripRequest, StreamEvent } from '../types'
 
 usePaperTheme()
 
@@ -187,6 +187,29 @@ function onStreamEvent(ev: StreamEvent) {
 async function onSubmit() {
   if (!form.city || !form.dates) return
 
+  const userId = getUserId()
+  let session: ServerSession | null = null
+  try {
+    // 校验/创建服务端会话；从对话页带来的 session_id 优先
+    const created = await ensureSession(
+      userId,
+      prefillSessionId.value || chatStore.activeId,
+      `${form.city} ${form.dates[0].format('MM-DD')} 行程`,
+      form.city,
+    )
+    session = created
+    chatStore.activeId = created.id
+    if (!chatStore.sessions.some((item) => item.id === created.id)) {
+      chatStore.sessions.unshift({ ...toChatSession(created), messages: [] })
+    }
+  } catch (e: any) {
+    message.error(
+      e?.response?.data?.message || e?.message || '会话创建失败，请检查后端服务',
+    )
+    return
+  }
+  if (!session) return
+
   const req: TripRequest = {
     city: form.city,
     start_date: form.dates[0].format('YYYY-MM-DD'),
@@ -196,7 +219,8 @@ async function onSubmit() {
     accommodation: form.accommodation,
     preferences: form.preferences,
     free_text_input: form.free_text_input,
-    session_id: prefillSessionId.value || getSessionId(),
+    user_id: userId,
+    session_id: session.id,
   }
 
   generating.value = true

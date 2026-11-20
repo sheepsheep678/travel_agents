@@ -1,16 +1,15 @@
 /**
- * 本地 mock 对话流。
+ * 本地 mock 对话流（仅保留作无后端时的演示）。
  *
- * 后端 /api/chat/stream 尚未实现，这里用关键词规则生成一段回复并按字符分片
- * 产出 ChatStreamEvent，供前端完整演示流式效果。后端就绪后把 MOCK_CHAT 置为
- * false（services/api.ts 自动改走真实 SSE）。
+ * 真实接口是 `POST /api/v1/chat/stream`，由 backend/app/modules/chat 提供；
+ * services/api.ts 已固定走真实 SSE。需要离线演示时再把这里的 MOCK_CHAT 置为 true。
  *
  * 回复只给规划思路与操作建议，不伪造具体地址 / 价格，符合项目防幻觉原则。
  */
 import { sketchbookCities } from '../data/sketchbookCities'
 import type { ChatRequest, ChatStreamEvent } from '../types'
 
-export const MOCK_CHAT = true
+export const MOCK_CHAT = false
 
 const CITY_NAMES = sketchbookCities.map((c) => c.name)
 

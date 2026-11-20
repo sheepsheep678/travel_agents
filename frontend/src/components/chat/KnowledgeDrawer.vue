@@ -143,7 +143,7 @@
         </div>
 
         <footer class="kd-foot">
-          资料仅对当前浏览器可见<span class="kd-id"> · ID {{ sessionId.slice(0, 8) }}</span>
+          资料仅对当前浏览器可见<span class="kd-id"> · ID {{ userId.slice(0, 8) }}</span>
           <br />规划时会与管理端知识库一起检索。
         </footer>
       </aside>
@@ -159,7 +159,7 @@ import type { KnowledgeItem } from '../../types'
 
 const props = defineProps<{
   open: boolean
-  sessionId: string
+  userId: string
 }>()
 
 const emit = defineEmits<{
@@ -241,12 +241,12 @@ function clearFile() {
 let loadToken = 0
 
 async function load() {
-  if (!props.sessionId) return
+  if (!props.userId) return
   const token = ++loadToken
   loading.value = true
   listError.value = ''
   try {
-    const response = await listKnowledge(props.sessionId)
+    const response = await listKnowledge(props.userId)
     if (token !== loadToken) return
     // 与当前列表合并，避免“上传成功但较早的列表请求返回后把新条目覆盖掉”。
     const byId = new Map<string, KnowledgeItem>()
@@ -269,7 +269,7 @@ async function submit() {
   if (!file.value && !content) return
 
   const formData = new FormData()
-  formData.append('session_id', props.sessionId)
+  formData.append("user_id", props.userId)
   if (file.value) formData.append('file', file.value)
   if (content) formData.append('text', content)
   if (title.value.trim()) formData.append('title', title.value.trim())
@@ -310,7 +310,7 @@ function remove(item: KnowledgeItem) {
     okButtonProps: { danger: true },
     async onOk() {
       try {
-        await deleteKnowledge(item.doc_id, props.sessionId)
+        await deleteKnowledge(item.doc_id, props.userId)
         items.value = items.value.filter((entry) => entry.doc_id !== item.doc_id)
         message.success('已删除')
       } catch (e: any) {
@@ -333,7 +333,7 @@ watch(
 )
 
 watch(
-  () => props.sessionId,
+  () => props.userId,
   () => {
     items.value = []
     listError.value = ''

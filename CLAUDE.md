@@ -1,29 +1,53 @@
 # 旅迹智绘（Travel-agents）Rules
 
-基于 LangGraph 多智能体工作流的 AI 旅行规划系统：FastAPI 后端（`backend/app`）+ Vue 3/Vite 前端（`frontend`）。高德地图 MCP 提供真实 POI/天气数据，本地 Chroma 知识库存放 11 座城市的攻略语料。
+基于 LangGraph 多智能体工作流的 AI 旅行规划系统：FastAPI 后端（`backend/app`）+ Vue 3/Vite 前端（`frontend`）。高德地图 MCP 提供真实 POI/天气数据，时间 MCP 与 12306 MCP 供对话助手查询实时信息，本地 Chroma 知识库存放 11 座城市的攻略语料，PostgreSQL 存储用户/会话/消息/知识库元数据与 LangGraph checkpointer。
 
 品牌名是「旅迹智绘」，但前端内部的 `sketchbook` / `sb-*` 命名是刻意保留的，不要为统一品牌而批量改名。
 
 ## Tech Stack
 
-- Backend: Python / FastAPI / LangGraph / LangChain
+- Backend: Python / FastAPI / LangGraph / LangChain / PostgreSQL（SQLAlchemy async + asyncpg）
+- Checkpointer: `langgraph-checkpoint-postgres` + `psycopg`（AsyncPostgresSaver）
+- Logging: structlog（彩色控制台 / 可选 JSON），只在 `main.py` 配置一次
 - RAG: Chroma 本地持久化（余弦距离，按 `city` metadata 过滤）+ HyDE
-- Data Source: 高德地图 MCP（SSE 连接，4 个工具）
+- Data Source: 高德地图 MCP（SSE）、时间 MCP（stdio）、12306 MCP（stdio，`npx -y 12306-mcp`）
 - Frontend: Vue 3 + TypeScript + Vite + Vue Router（`frontend/`）
-- State: `src/store.ts` 轻量 `reactive` store（**不是 Pinia**）
+- State: `src/store.ts` 轻量 `reactive` store（**不是 Pinia**）；会话与消息以服务端为准
 - Export: 高德 JS API 2.0 / PDF / PNG
+
+## 目录结构
+
+```
+backend/app/
+  main.py                 # 唯一入口：structlog、lifespan、路由挂载、全局异常
+  core/                   # config / logging / database / deps / exceptions
+  integrations/           # llm / chroma / mcp（外部服务适配）
+  agent/                  # LangGraph 图、state、prompts、constants、nodes/
+  modules/
+    health/               # GET /api/v1/health
+    sessions/             # models / repository / schemas / service / router
+    chat/                 # agent / history(checkpointer) / SSE service
+    knowledge/            # 知识库 PG 元数据 + Chroma 向量 + ingest_cli
+    trip/                 # 行程规划 models / repository / service / router / schemas
+  scripts/                # init_db.py / migrate_admin_metadata.py
+  data/
+    corpus/               # 11 座城市 txt 语料（文件名即 city）
+    chroma_db/            # Chroma 持久化（受版本管理，勿重新入库弄脏）
+    md5.text              # 语料入库去重账本
+```
 
 ## Commands
 
 除注明外，均在仓库根目录执行（Python 代码使用绝对导入 `backend.app.*`，CWD 必须是仓库根目录）。
 
-- 启动后端（默认 8000 端口）：`python -m backend.app.api.main`
+- 初始化 PostgreSQL（建库 + 建表 + checkpointer）：`python -m backend.app.scripts.init_db`
+- 启动后端（默认 8000 端口）：`python -m backend.app.main`
 - 启动前端（5173 端口，需先 `npm install`）：`cd frontend && npm run dev`
 - 类型检查 + 生产构建：`cd frontend && npm run build`
-- 重建 RAG 向量库（执行后必须重启后端）：`python -m backend.app.api.rag_file_uploader`
-- 不经 HTTP，直接跑整张图调试（内置青岛 3 天示例）：`python -m backend.app.services.travel_plan_agent`
-- 验证高德 MCP 工具能否加载：`python -m backend.app.nodes.tools.amap_mcp_servers`
-- 需要热重载时（入口本身不支持 `--reload`）：`uvicorn backend.app.api.main:app --reload`
+- 重建 RAG 向量库（执行后必须重启后端）：`python -m backend.app.modules.knowledge.ingest_cli`
+- 不经 HTTP，直接跑整张图调试（内置青岛 3 天示例）：`python -m backend.app.agent.graph`
+- 验证 MCP 工具加载（高德 / 时间 / 12306）：`python -m backend.app.integrations.mcp`
+- 需要热重载时：`uvicorn backend.app.main:app --reload --loop backend.app.core.runtime:proactor_loop_factory`（Windows 下必须显式指定，见“事件循环”一节）
 
 本仓库没有自动化测试和 lint 脚本，不要假设存在 `pytest` / `npm test` 命令。
 
@@ -31,13 +55,36 @@
 
 ### 请求与生命周期
 
-`backend/app/api/main.py` 是唯一入口：lifespan 先 `validate_config()` fail-fast，再 `init_amap_mcp_async()` 连接高德 MCP；`get_travel_plan_agent()`（`services/travel_plan_agent.py`）返回进程级单例，LangGraph 图在首次调用时才编译。
+`backend/app/main.py` 是唯一入口：`setup_logging()` 只在这里调用一次；lifespan 依次执行 `validate_config()` → `init_database()`（连接 PG、`create_all`、初始化 checkpointer）→ `init_mcp_async()`（高德/时间/12306 独立初始化，单服务失败不阻断启动）。关闭时先 `close_mcp()` 再 `close_database()`。
 
-三个 API：`GET /api/health`（含 `mcp_ready`）、`POST /api/trip/plan`（一次性）、`POST /api/trip/plan/stream`（SSE）。请求体是 `models/request.py` 的 `TripRequest`，经 `initial_state()` 转成图状态。
+所有业务路由挂载在 `/api/v1` 下：
+
+| 模块 | 路径 | 说明 |
+| --- | --- | --- |
+| health | `GET /api/v1/health` | 数据库、checkpointer、各 MCP 服务状态 |
+| sessions | `/api/v1/sessions` | 创建 / ensure / 列表 / 详情 / 删除 |
+| chat | `POST /api/v1/chat/stream` | 对话 SSE（token / done / error） |
+| knowledge | `/api/v1/knowledge/*` | 用户上传 / 列表 / 删除；管理端上传 |
+| trip | `/api/v1/trip/plan`、`/api/v1/trip/plan/stream` | 一次性 / SSE 行程规划 |
+
+路由只做参数与依赖注入，业务逻辑在对应模块的 `service.py`；数据库操作在 `repository.py`；`core/deps.py` 提供 `DbSession` 与各 service 的 `Depends`。业务错误抛 `core/exceptions.py` 的 `AppError` 子类，由 `core/exception_handlers.py` 统一转成 `{"success": false, "code": ..., "message": ...}`。
+
+### 配置
+
+`backend/app/core/config.py` 的 `settings = Settings()` 是唯一配置实例，按模块分组：`settings.app` / `server` / `database` / `amap` / `llm` / `rag` / `planner` / `knowledge` / `chat` / `logging` / `mcp`。每组是独立的 `BaseSettings`，字段用 `validation_alias` 读取仓库根目录 `.env` 的历史变量名（如 `OPENAI_API_KEY`、`AMAP_API_KEY`）。新增配置要加在对应分组，不要恢复扁平字段。
+
+### 数据库与会话
+
+- 业务表：`users`、`chat_sessions`、`knowledge_documents`、`trip_plans`（每次规划一条，含 thread_id / 请求 / 结果 / 状态）。
+- 对话消息不落业务表：`chat_sessions` 只记录“有哪些会话”（user_id + session_id + 标题/城市），消息内容快照由 LangGraph checkpointer 按 `thread_id = session_id` 保存。
+- LangGraph checkpoint 由 `AsyncPostgresSaver` 管理，表由 `setup()` 创建；不要把 checkpoint 表写进 `Base.metadata`。
+- `user_id` = 浏览器匿名 ID（前端 `localStorage` 的 `lvji_client_id`），知识库归属按 `user_id` 计算。
+- `session_id` = 服务端 `chat_sessions.id`；前端提交 `user_id + session_id`，后端 `SessionService.assert_session()` 校验归属。
+- 每次行程规划使用独立 `thread_id = "{session_id|user_id}:{uuid}"`，避免同一线程的叠加 reducer 把多次规划状态混在一起。
 
 ### 图结构与门控语义
 
-图定义在 `services/travel_plan_agent.py`，状态在 `state.py`：
+图定义在 `agent/graph.py`，状态在 `agent/state.py`：
 
 ```
 START ─┬─ attraction_tool_node → attraction_enrich_node → hotel_tool_node → hotel_enrich_node ─┐
@@ -48,21 +95,22 @@ plan_gate_node ──数据齐备──→ plan_node → evaluation_node ──�
                     └─未齐备──→ END            └───────未通过────────────→ plan_node（最多 2 轮）
 ```
 
-- `plan_gate_node` 是纯门控：`is_plan_ready()`（`nodes/gate.py`）要求景点、酒店、天气、RAG 均非空，且 `hotel_round >= search_round`。未齐备时路由到 END——这**只结束当前 superstep**，剩余并行分支完成后 LangGraph 会再次触发门控，不是真正终止。
+- `plan_gate_node` 是纯门控：`is_plan_ready()`（`agent/nodes/gate.py`）要求景点、酒店、天气、RAG 均非空，且 `hotel_round >= search_round`。未齐备时路由到 END——这**只结束当前 superstep**，剩余并行分支完成后 LangGraph 会再次触发门控，不是真正终止。
 - `rag_attraction_node_router` 判断 RAG 提取出的景点名是否都被工具搜索覆盖，缺失则跳回 `attraction_tool_node` 补搜。
-- 评估不通过时，`evaluation_node` 把计划归档到 `history_plan`、写入 `eval_feedback`；`plan_node` 检测到二者后进入修订模式。轮次上限 `MAX_EVAL_ROUNDS` 定义在 `constants.py`。
+- 评估不通过时，`evaluation_node` 把计划归档到 `history_plan`、写入 `eval_feedback`；`plan_node` 检测到二者后进入修订模式。轮次上限 `MAX_EVAL_ROUNDS` 定义在 `agent/constants.py`。
 
 ### 状态与 reducer
 
-`state.py` 的 `PlannerState` 是唯一状态契约：
+`agent/state.py` 的 `PlannerState` 是唯一状态契约：
 
 - `attraction_names` / `rag_attraction_names` 用集合并集 reducer；`attractions_result`、`weather_result`、`hotel_result`、`history_plan`、`parse_error` 用列表累加 reducer。这使多轮补搜和修订可以叠加，而不是覆盖。
 - 节点只返回**部分状态字典**，不要返回整个 state。
 - 新增字段必须同时加到 `PlannerState` 和 `initial_state()`。
+- `user_id` 用于 RAG 的用户私有文档过滤；`session_id` 用于日志与 checkpoint 线程标识。
 
 ### 防幻觉契约（修改 prompt/模型时必须保留）
 
-LLM 只输出计划**框架与名称**（`plan.py` 的 `PlannerOutput` / `DayPlanBrief`），所有具体详情由系统按名称从 state 确定性回填：
+LLM 只输出计划**框架与名称**（`agent/nodes/plan.py` 的 `PlannerOutput` / `DayPlanBrief`），所有具体详情由系统按名称从 state 确定性回填：
 
 - 景点对象、酒店对象、天气、日期 → `plan.py` 按名称查找并回填；未知名称跳过/置空；空景点日按描述关键词或评分兜底填充。
 - 景点详情（name/address/location/category/rating/photos/poi_id/ticket_price/visit_duration）→ `attraction.map_attraction_details()` 从原始 MCP 数据确定性映射，图片由 `photo` 字段直接解析；门票价缺失时填 0，不按知名度猜测。
@@ -73,44 +121,66 @@ LLM 只输出计划**框架与名称**（`plan.py` 的 `PlannerOutput` / `DayPla
 
 ### 评估
 
-`nodes/evaluation.py` 先做确定性强校验（天数一致、每天有景点、游览总时长 ≤ `MAX_DAILY_MINUTES`、有酒店候选时每天必须有酒店），命中任一即一票否决；无硬性问题时才以 LLM 的 `passed` 为准。
+`agent/nodes/evaluation.py` 先做确定性强校验（天数一致、每天有景点、游览总时长 ≤ `MAX_DAILY_MINUTES`、有酒店候选时每天必须有酒店），命中任一即一票否决；无硬性问题时才以 LLM 的 `passed` 为准。
 
 ### MCP 工具
 
-`nodes/tools/amap_mcp_servers.py` 通过 SSE 连接高德并缓存全局工具列表。节点用 `utils.get_tool(tools, name)` 按名称查找：
+`integrations/mcp.py` 用 `MultiServerMCPClient` 同时管理三个服务，按服务独立初始化并缓存工具；某服务失败只记录在 `errors`，不影响启动：
 
-- `maps_text_search`（景点搜索）
-- `maps_search_detail`（POI 详情）
-- `maps_around_search`（景点周边酒店）
-- `maps_weather`（天气）
+- `amap`（SSE）：`maps_text_search`（景点搜索）、`maps_search_detail`（POI 详情）、`maps_around_search`（周边酒店）、`maps_weather`（天气）；实际返回 15 个工具，节点按名称取用。
+- `time`（stdio：`python -m mcp_server_time`）：`get_current_time`、`convert_time`。
+- `rail`（stdio：`npx -y 12306-mcp`）：`get-current-date`、`get-station-code-of-citys`、`get-tickets`、`get-interline-tickets` 等 8 个工具。Windows 上经 `cmd.exe /c npx.cmd` 启动。
 
-工具缺失时节点返回 `parse_error` 而不抛异常。MCP 结果是文本块，统一用 `utils._extract_text()` 解析；详情批量获取用 `utils.fetch_details()`（信号量限流 + 重试）。
+行程图只使用 amap 工具；对话助手通过 `modules/chat/agent.py` 的 `create_agent` 绑定 time + rail 工具。工具缺失时行程节点返回 `parse_error` 而不抛异常。MCP 结果是文本块，统一用 `agent/nodes/utils._extract_text()` 解析；详情批量获取用 `fetch_details()`（信号量限流 + 重试）。
+
+### 对话 SSE
+
+`POST /api/v1/chat/stream` 由 `sse-starlette` 的 `EventSourceResponse` 输出，10 秒心跳。事件：
+
+```
+data: {"type":"token","delta":"..."}
+data: {"type":"done","session_id":"..."}
+data: {"type":"error","message":"..."}
+```
+
+对话使用 LangChain `create_agent` + LangGraph checkpointer，`thread_id = chat_sessions.id`：
+
+- `ChatService.prepare()` 校验 `user_id + session_id`，通过 `agent.aupdate_state()` 把用户消息写入 checkpointer；
+- `stream()` 用 `agent.astream({"messages": []}, config, stream_mode="messages")` 运行 Agent，只把模型节点的文本 token 推给前端；
+- 历史读取：`modules/chat/history.py` 用 `checkpointer.aget_tuple()` 取 `channel_values.messages`；
+- 删除会话：`SessionService.delete_session()` 先 `checkpointer.adelete_thread(session_id)`，再删 `chat_sessions` 行；
+- 重新生成：`agent.aget_state()` 找到最后一条助手消息，用 `RemoveMessage` 删除后重新流式生成。
+
+不要再新增 `chat_messages` 表或手动搬运消息；checkpointer 是消息快照的唯一事实来源。
 
 ### RAG
 
-`nodes/rag.py` 做 HyDE：LLM 生成假设性答案文档 → Chroma 检索 → LLM 提取景点名。`services/rag_component.py` 持有 Chroma 单例并按 `city` metadata 过滤。
+`agent/nodes/rag.py` 做 HyDE：LLM 生成假设性答案文档 → Chroma 检索 → LLM 提取景点名。`integrations/chroma.py` 持有 Chroma 单例并按 `city` metadata 过滤；用户文档按 `owner_id = user_id` 过滤。
 
-**入库脚本和查询侧必须共用 `get_vector_store()`**，保证集合名、距离度量、嵌入模型完全一致。集合创建后配置不可改（默认余弦距离），切换需删除 `chroma_dir` 重新入库。`chroma_dir` / `md5_path` 默认推导到 `backend/app/api/`。
+**入库脚本和查询侧必须共用 `get_vector_store()`**，保证集合名、距离度量、嵌入模型完全一致。集合创建后配置不可改（默认余弦距离），切换需删除 `data/chroma_db` 重新入库。`chroma_dir` / `md5_path` / `corpus_dir` 默认在 `backend/app/data/`。
 
 ⚠️ **入库后必须重启后端**：Chroma 索引按持久化目录缓存在进程内，后端运行期间用另一进程入库会导致检索缺结果，或抛 `InternalError: Error finding id`。
 
-### SSE 进度
+### 行程 SSE 进度
 
-`TravelPlanAgent.stream_events()` 从 `graph.astream_events(version="v2")` 中**只保留 `NODE_LABELS`（`constants.py`）里登记的节点**的 chain 事件。新增图节点若不加入 `NODE_LABELS`，前端将收不到该节点的任何进度事件。
+`TravelPlanAgent.stream_events()` 从 `graph.astream_events(version="v2")` 中**只保留 `NODE_LABELS`（`agent/constants.py`）里登记的节点**的 chain 事件。新增图节点若不加入 `NODE_LABELS`，前端将收不到该节点的任何进度事件。
 
-事件协议：`node_start` / `node_end` / `node_error` / `done`。`main.py` 用队列桥接事件，每 10 秒发 `: ping` 心跳，客户端断开时取消图执行。前端解析在 `frontend/src/services/api.ts`，TS 类型在 `frontend/src/types/index.ts`，与 `backend/app/models/response.py` 的 Pydantic 模型一一对应。
+事件协议：`node_start` / `node_end` / `node_error` / `done`。`modules/trip/router.py` 用 `EventSourceResponse` 推流，客户端断开时取消图执行。前端解析在 `frontend/src/services/api.ts`，TS 类型在 `frontend/src/types/index.ts`，与 `modules/trip/schemas.py` 的 Pydantic 模型一一对应。
 
 ### 前端
 
-- Vue 3 + Vue Router，两个路由：`/`（Home，手账翻书选城）与 `/result`（结果页）。
-- 跨页计划状态是 `src/store.ts` 的轻量 `reactive` store，**不是 Pinia**（README 中的 "Pinia" 表述过时）。
+- Vue 3 + Vue Router，四个路由：`/`（首页）、`/quick-start`（手账翻书选城）、`/chat`（AI 对话）、`/result`（结果页）。
+- 跨页计划状态是 `src/store.ts` 的轻量 `reactive` store，**不是 Pinia**。
+- 会话与消息以服务端为准：`store.ts` 只持久化 `lvji_client_id`（`getUserId()`）与 `lvji_active_session`；`Chat.vue` 挂载时 `GET /sessions`，选择会话时 `GET /sessions/{id}` 拉取消息。
 - `views/Result.vue` 用 `VITE_AMAP_WEB_JS_KEY` 加载高德 JS API 2.0，并包含地图标注、PDF/PNG 导出逻辑。
 - 翻书交互在 `components/sketchbook/*`，城市配置在 `data/sketchbookCities.ts`。
 - 布局与动效样式在 `styles/` 下，其中 `sketchbook.css` 是翻书相关的核心样式。
 
 ### 配置与环境变量
 
-- 后端读仓库根目录 `.env`（pydantic-settings，`services/config.py`）：`OPENAI_API_KEY` / `OPENAI_BASE_URL` / `OPENAI_MODEL_ID` / `EMBEDDING_MODEL_NAME` / `AMAP_API_KEY` / `HOST` / `PORT` / `CORS_ORIGINS` / `LOG_LEVEL` 等。
+- 后端读仓库根目录 `.env`（pydantic-settings，`core/config.py`）：`POSTGRES_HOST` / `POSTGRES_PORT` / `POSTGRES_USER` / `POSTGRES_PASSWORD` / `POSTGRES_DB` / `OPENAI_API_KEY` / `OPENAI_BASE_URL` / `OPENAI_MODEL_ID` / `EMBEDDING_MODEL_NAME` / `AMAP_API_KEY` / `HOST` / `PORT` / `CORS_ORIGINS` / `LOG_LEVEL` / `MCP_*` 等。
+- `settings.database.url` / `checkpoint_url` 由 `build_url()` 自动拼接：前者是 `postgresql+asyncpg://`（SQLAlchemy 元数据增删改查），后者是 `postgresql://`（psycopg checkpointer）。用户名/密码会做 URL 编码；默认值为 `127.0.0.1` / `5432` / `postgres` / `postgres` / `travel_agents`，部署时用 `POSTGRES_*` 覆盖。
+- **Windows 事件循环**：MCP stdio 子进程需要 `ProactorEventLoop`，psycopg async 需要 `SelectorEventLoop`。应用主循环保持 Proactor，`core/database.py` 在独立 Selector 线程里运行 checkpointer 连接池，并把 `aget_tuple` / `aput` / `aput_writes` / `adelete_thread` 等 async 方法代理回来。uvicorn 的 `loop` 用 `backend.app.core.runtime:proactor_loop_factory`。
 - 前端读 `frontend/.env` 的 `VITE_AMAP_WEB_JS_KEY`。它和后端 `AMAP_API_KEY` 是两把不同的 Key（Web 端 JS API vs 服务端）。
 - Vite 将 `/api` 代理到 `http://127.0.0.1:8000`（`frontend/vite.config.ts`）。
 - 前端 axios/fetch 与 Vite 代理超时都设为 10 分钟：Agent 单次运行可能长达约 5 分钟。
@@ -120,40 +190,54 @@ LLM 只输出计划**框架与名称**（`plan.py` 的 `PlannerOutput` / `DayPla
 - 所有 Python 入口都在仓库根目录执行；绝对导入 `backend.app.*` 依赖此 CWD。
 - 节点只返回**部分状态字典**，不要返回整个 state。
 - 新增状态字段必须同时加到 `PlannerState` 和 `initial_state()`。
-- 新增图节点必须加入 `constants.py` 的 `NODE_LABELS`，否则前端收不到该节点的 SSE 事件。
+- 新增图节点必须加入 `agent/constants.py` 的 `NODE_LABELS`，否则前端收不到该节点的 SSE 事件。
+- 新增业务接口放在 `modules/<module>/router.py`，挂载时统一加 `/api/v1` 前缀，并用 `Depends` 注入 service 与 DB session。
+- 业务错误抛 `AppError` 子类，不要在各层重复拼 `HTTPException` 响应。
 - 入库脚本和查询侧必须共用 `get_vector_store()`，保证集合名、距离度量、嵌入模型一致。
 - 重新入库后必须重启后端（Chroma 进程内缓存）。
 - 保持防幻觉契约：LLM 只输出框架与名称，详情由系统按名称确定性回填。
 - 保持 Vite 代理使用 `127.0.0.1` 而非 `localhost`，否则 Node 可能解析到 IPv6 `::1` 导致连不上后端。
 - 前端超时保持 10 分钟（axios/fetch 与 Vite 代理），Agent 单次运行可能长达约 5 分钟。
-- 新城市的语料放在 `backend/app/api/data/<城市名>.txt`，文件名即 metadata 中的 `city`。
+- 新城市的语料放在 `backend/app/data/corpus/<城市名>.txt`，文件名即 metadata 中的 `city`。
 
 ## Never Do
 
 - 不要让 LLM 直接生成地址、坐标、图片等易幻觉字段。
 - 不要在节点里返回整个 state。
-- 不要用 `python -m backend.app.api.main` 配合 `--reload`（入口不支持），需要热重载时用 `uvicorn backend.app.api.main:app --reload`。
+- 不要恢复 `backend.app.api.main` / `backend.app.services.*` / `backend.app.nodes.*` 旧路径；入口是 `backend.app.main`。
+- 不要用 `python -m backend.app.main` 配合 `--reload`（入口不支持），需要热重载时用 `uvicorn backend.app.main:app --reload --loop backend.app.core.runtime:proactor_loop_factory`。
 - 不要假设存在自动化测试或 lint 脚本（无 `pytest` / `npm test`）。
 - 不要为统一品牌而批量重命名 `sketchbook` / `sb-*`。
 - 不要用 Pinia 替换 `src/store.ts` 的轻量 store。
 - 不要在后端运行期间用另一进程重新入库 Chroma（会缺结果或抛 `InternalError: Error finding id`）。
 - 不要把 Vite 代理改成 `localhost`。
-- 不要修改集合创建后的 Chroma 配置（维度/距离度量不可改，需删除 `chroma_dir` 重新入库）。
-- 不要提交或顺手重新入库 `backend/app/api/chroma_db/` 的二进制文件：该目录受版本管理，重新入库会弄脏 `data_level0.bin`、`length.bin`、`chroma.sqlite3`。
+- 不要修改集合创建后的 Chroma 配置（维度/距离度量不可改，需删除 `data/chroma_db` 重新入库）。
+- 不要提交或顺手重新入库 `backend/app/data/chroma_db/` 的二进制文件：该目录受版本管理，重新入库会弄脏 `data_level0.bin`、`length.bin`、`chroma.sqlite3`。
+- 不要在 `/api/v1` 之外新增旧 `/api` 别名；前端 `services/api.ts` 已统一使用 `/api/v1`。
 
 ## 仓库特定注意事项
 
-- `.env`、`frontend/.env`、`node_modules`、`.venv`、`dist/` 已 gitignore；但 `backend/app/api/chroma_db/` 是提交进仓库的。
+- `.env`、`frontend/.env`、`node_modules`、`.venv`、`dist/` 已 gitignore；但 `backend/app/data/chroma_db/` 是提交进仓库的。
 - 前端内部 `sketchbook` / `sb-*` 命名刻意保留，不要为统一品牌而批量改名。
 - README 中关于 Pinia 的表述已过时，以 `src/store.ts` 的实际实现为准。
+- 本机后端解释器是 conda `langchain` 环境（`D:\Development-Tools\anaconda3\envs\langchain\python.exe`）；仓库根目录 `.venv` 不可用。
+- 12306 MCP 首次调用会下载 npm 包，可能耗时数十秒；`MCP_INIT_TIMEOUT` 默认 60s，可按需调大。
 
 ## More Rules
 
-- 状态契约：`backend/app/state.py`
-- 图结构与路由：`backend/app/services/travel_plan_agent.py`
-- 节点标签与轮次上限：`backend/app/constants.py`
-- 门控与就绪判断：`backend/app/nodes/gate.py`
-- 防幻觉回填：`backend/app/nodes/plan.py`、`backend/app/nodes/attraction.py`、`backend/app/nodes/hotel.py`
-- 评估规则：`backend/app/nodes/evaluation.py`
-- RAG 入库：`backend/app/api/rag_file_uploader.py`、`backend/app/services/rag_component.py`
-- 响应/事件模型：`backend/app/models/response.py`、`frontend/src/types/index.ts`、`frontend/src/services/api.ts`
+- 配置聚合根：`backend/app/core/config.py`
+- 日志：`backend/app/core/logging.py`
+- 数据库 / checkpointer：`backend/app/core/database.py`
+- Windows 事件循环工厂：`backend/app/core/runtime.py`
+- 依赖注入：`backend/app/core/deps.py`
+- 异常：`backend/app/core/exceptions.py`、`backend/app/core/exception_handlers.py`
+- 状态契约：`backend/app/agent/state.py`
+- 图结构与路由：`backend/app/agent/graph.py`
+- 节点标签与轮次上限：`backend/app/agent/constants.py`
+- 门控与就绪判断：`backend/app/agent/nodes/gate.py`
+- 防幻觉回填：`backend/app/agent/nodes/plan.py`、`attraction.py`、`hotel.py`
+- 评估规则：`backend/app/agent/nodes/evaluation.py`
+- 会话 / 对话：`backend/app/modules/sessions/`、`backend/app/modules/chat/`
+- 知识库与 RAG 入库：`backend/app/modules/knowledge/`、`backend/app/integrations/chroma.py`
+- MCP：`backend/app/integrations/mcp.py`
+- 响应/事件模型：`backend/app/modules/trip/schemas.py`、`frontend/src/types/index.ts`、`frontend/src/services/api.ts`

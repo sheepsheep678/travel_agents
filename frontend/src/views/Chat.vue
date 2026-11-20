@@ -26,7 +26,6 @@
           </button>
           <span class="chat-title">{{ activeSession?.title || '新的对话' }}</span>
           <button class="chat-kb-btn" @click="openKnowledge">＋ 知识库</button>
-          <span v-if="MOCK_CHAT" class="chat-mode">演示模式</span>
         </div>
 
         <div ref="scrollEl" class="chat-scroll" @scroll.passive="onScroll">
@@ -69,7 +68,7 @@
 
     <KnowledgeDrawer
       :open="knowledgeOpen"
-      :session-id="sessionId"
+      :user-id="userId"
       @close="knowledgeOpen = false"
     />
   </div>
@@ -78,6 +77,7 @@
 <script setup lang="ts">
 import { computed, nextTick, onMounted, onUnmounted, ref } from 'vue'
 import { useRouter } from 'vue-router'
+import { message } from 'ant-design-vue'
 import SiteHeader from '../components/site/SiteHeader.vue'
 import SealMark from '../components/site/SealMark.vue'
 import ChatSidebar from '../components/chat/ChatSidebar.vue'
@@ -85,15 +85,21 @@ import ChatMessageItem from '../components/chat/ChatMessageItem.vue'
 import ChatComposer from '../components/chat/ChatComposer.vue'
 import KnowledgeDrawer from '../components/chat/KnowledgeDrawer.vue'
 import { usePaperTheme } from '../composables/usePaperTheme'
-import { chatStore, getSessionId, tripStore } from '../store'
-import { streamChat } from '../services/api'
-import { MOCK_CHAT } from '../services/chatMock'
+import { chatStore, getUserId, toChatSession, tripStore } from '../store'
+import {
+  createSession,
+  deleteSession,
+  getSession,
+  listSessions,
+  streamChat,
+} from '../services/api'
 import { sketchbookCities } from '../data/sketchbookCities'
 import type { ChatMessage, ChatSession } from '../types'
 
 usePaperTheme()
 
 const router = useRouter()
+const userId = getUserId()
 
 const CITY_NAMES = sketchbookCities.map((c) => c.name)
 const PREF_KEYS = [
@@ -118,19 +124,20 @@ let stickToBottom = true
 const activeSession = computed(
   () => chatStore.sessions.find((s) => s.id === chatStore.activeId) ?? null,
 )
-const messages = computed(() => activeSession.value?.messages ?? [])
+const messages = computed(() => chatStore.messages)
 const isEmpty = computed(() => messages.value.length === 0)
-const sessionId = computed(() => getSessionId())
 
 const sessionCity = computed(() => {
-  const s = activeSession.value
-  if (!s) return ''
-  for (let i = s.messages.length - 1; i >= 0; i--) {
-    const city = CITY_NAMES.find((n) => s.messages[i].content.includes(n))
+  for (let i = messages.value.length - 1; i >= 0; i--) {
+    const city = CITY_NAMES.find((n) => messages.value[i].content.includes(n))
     if (city) return city
   }
-  return ''
+  return activeSession.value?.city || ''
 })
+
+function errorText(e: any, fallback: string): string {
+  return e?.response?.data?.message || e?.message || fallback
+}
 
 function uid(prefix: string): string {
   return `${prefix}_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 7)}`
@@ -165,60 +172,116 @@ function openKnowledge() {
   knowledgeOpen.value = true
 }
 
-function newSession() {
-  stopIfStreaming()
-  const now = Date.now()
-  const session: ChatSession = {
-    id: uid('c'),
-    title: '',
-    messages: [],
-    createdAt: now,
-    updatedAt: now,
+/* ------- 服务端会话同步 ------- */
+
+async function loadSessions() {
+  chatStore.loading = true
+  try {
+    const list = await listSessions(userId)
+    chatStore.sessions = list.map((session) => ({
+      ...toChatSession(session),
+      messages: [],
+    }))
+    if (
+      chatStore.activeId &&
+      !chatStore.sessions.some((session) => session.id === chatStore.activeId)
+    ) {
+      chatStore.activeId = null
+    }
+    if (!chatStore.activeId && chatStore.sessions.length) {
+      chatStore.activeId = chatStore.sessions[0].id
+    }
+  } catch (e: any) {
+    message.error(errorText(e, '会话列表加载失败'))
+  } finally {
+    chatStore.loading = false
   }
-  chatStore.sessions.unshift(session)
-  chatStore.activeId = session.id
-  sidebarOpen.value = false
-  stickToBottom = true
-  nextTick(() => scrollToBottom(true))
 }
 
-function selectSession(id: string) {
+async function loadMessages(id: string) {
+  try {
+    const detail = await getSession(id, userId)
+    const converted = toChatSession(detail)
+    const index = chatStore.sessions.findIndex((session) => session.id === id)
+    if (index >= 0) {
+      chatStore.sessions[index] = { ...converted, messages: [] }
+    }
+    if (chatStore.activeId === id) {
+      chatStore.messages = converted.messages
+    }
+  } catch (e: any) {
+    message.error(errorText(e, '会话消息加载失败'))
+  }
+}
+
+async function newSession() {
+  stopIfStreaming()
+  try {
+    const session = toChatSession(await createSession(userId))
+    chatStore.sessions.unshift({ ...session, messages: [] })
+    chatStore.activeId = session.id
+    chatStore.messages = []
+    sidebarOpen.value = false
+    stickToBottom = true
+    await nextTick()
+    scrollToBottom(true)
+  } catch (e: any) {
+    message.error(errorText(e, '创建会话失败'))
+  }
+}
+
+async function selectSession(id: string) {
   if (id === chatStore.activeId) {
     sidebarOpen.value = false
     return
   }
   stopIfStreaming()
   chatStore.activeId = id
+  chatStore.messages = []
   sidebarOpen.value = false
   stickToBottom = true
-  nextTick(() => scrollToBottom(true))
+  await loadMessages(id)
+  await nextTick()
+  scrollToBottom(true)
 }
 
-function removeSession(id: string) {
+async function removeSession(id: string) {
   if (id === chatStore.activeId) stopIfStreaming()
-  const i = chatStore.sessions.findIndex((s) => s.id === id)
-  if (i < 0) return
-  chatStore.sessions.splice(i, 1)
+  try {
+    await deleteSession(id, userId)
+  } catch (e: any) {
+    message.error(errorText(e, '删除会话失败'))
+    return
+  }
+  chatStore.sessions = chatStore.sessions.filter((session) => session.id !== id)
   if (chatStore.activeId === id) {
     chatStore.activeId = chatStore.sessions[0]?.id ?? null
-    if (!chatStore.activeId) newSession()
+    chatStore.messages = []
+    if (!chatStore.activeId) await newSession()
+    else await loadMessages(chatStore.activeId)
   }
 }
 
-function ensureSession(): ChatSession {
-  if (!activeSession.value) newSession()
-  return activeSession.value as ChatSession
+async function ensureActiveSession(): Promise<ChatSession | null> {
+  if (activeSession.value) return activeSession.value
+  await newSession()
+  return activeSession.value
 }
 
-async function runAssistant(session: ChatSession, userText: string) {
-  const msg: ChatMessage = {
+async function runAssistant(
+  session: ChatSession,
+  userText: string,
+  regenerate = false,
+) {
+  chatStore.messages.push({
     id: uid('m'),
     role: 'assistant',
     content: '',
     createdAt: Date.now(),
     status: 'streaming',
-  }
-  session.messages.push(msg)
+  })
+  // 必须拿 reactive 数组里的代理对象；直接改 push 进去的原始对象不会触发视图更新
+  const msg = chatStore.messages[chatStore.messages.length - 1]
   session.updatedAt = Date.now()
   chatStore.streaming = true
   const ctrl = new AbortController()
@@ -227,7 +290,13 @@ async function runAssistant(session: ChatSession, userText: string) {
 
   try {
     for await (const ev of streamChat(
-      { session_id: session.id, message: userText, city: sessionCity.value || undefined },
+      {
+        user_id: userId,
+        session_id: session.id,
+        message: userText,
+        city: sessionCity.value || undefined,
+        regenerate,
+      },
       ctrl.signal,
     )) {
       if (ev.type === 'token') {
@@ -240,6 +309,11 @@ async function runAssistant(session: ChatSession, userText: string) {
         msg.error = ev.message
         break
       } else {
+        if (ev.session_id && ev.session_id !== session.id) {
+          // 理论上不会发生；保持本地状态与服务端一致
+          session.id = ev.session_id
+          chatStore.activeId = ev.session_id
+        }
         msg.status = 'done'
         break
       }
@@ -248,8 +322,8 @@ async function runAssistant(session: ChatSession, userText: string) {
   } catch (e: any) {
     if (e?.name === 'AbortError') {
       if (!msg.content) {
-        const i = session.messages.findIndex((m) => m.id === msg.id)
-        if (i >= 0) session.messages.splice(i, 1)
+        const i = chatStore.messages.findIndex((m) => m.id === msg.id)
+        if (i >= 0) chatStore.messages.splice(i, 1)
       } else {
         msg.status = 'stopped'
       }
@@ -269,7 +343,9 @@ async function send(text: string) {
   const content = text.trim()
   if (!content || chatStore.streaming) return
 
-  const session = ensureSession()
+  const session = await ensureActiveSession()
+  if (!session) return
+
   const user: ChatMessage = {
     id: uid('m'),
     role: 'user',
@@ -277,7 +353,7 @@ async function send(text: string) {
     createdAt: Date.now(),
     status: 'done',
   }
-  session.messages.push(user)
+  chatStore.messages.push(user)
   if (!session.title) session.title = content.replace(/\s+/g, ' ').slice(0, 18)
   session.updatedAt = Date.now()
 
@@ -289,12 +365,15 @@ async function send(text: string) {
 async function regenerate() {
   const session = activeSession.value
   if (!session || chatStore.streaming) return
-  const lastAssistant = [...session.messages].reverse().find((m) => m.role === 'assistant')
+  const lastAssistant = [...chatStore.messages]
+    .reverse()
+    .find((m) => m.role === 'assistant')
   if (!lastAssistant) return
-  const i = session.messages.findIndex((m) => m.id === lastAssistant.id)
-  if (i >= 0) session.messages.splice(i, 1)
-  const userText = lastUserContent()
-  if (userText) await runAssistant(session, userText)
+  const index = chatStore.messages.findIndex((m) => m.id === lastAssistant.id)
+  if (index >= 0) chatStore.messages.splice(index, 1)
+  const lastUser = [...chatStore.messages].reverse().find((m) => m.role === 'user')
+  if (!lastUser) return
+  await runAssistant(session, '', true)
 }
 
 function goPlan() {
@@ -304,7 +383,8 @@ function goPlan() {
     city: sessionCity.value || undefined,
     preferences: preferences.length ? preferences : undefined,
     free_text_input: lastUser.slice(0, 120),
-    session_id: sessionId.value,
+    user_id: userId,
+    session_id: chatStore.activeId || undefined,
   }
   router.push('/quick-start')
 }
@@ -334,10 +414,16 @@ function onGlobalKeydown(e: KeyboardEvent) {
   if (e.key === 'Escape') sidebarOpen.value = false
 }
 
-onMounted(() => {
-  if (!chatStore.sessions.length) newSession()
-  else nextTick(() => scrollToBottom(true))
+onMounted(async () => {
   window.addEventListener('keydown', onGlobalKeydown)
+  await loadSessions()
+  if (!chatStore.sessions.length) {
+    await newSession()
+  } else if (chatStore.activeId) {
+    await loadMessages(chatStore.activeId)
+  }
+  await nextTick()
+  scrollToBottom(true)
 })
 
 onUnmounted(() => {

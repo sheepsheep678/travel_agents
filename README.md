@@ -30,7 +30,7 @@
 
 - **沉浸式首页**：牛皮纸手账视觉、叠放的旅行明信片与热门城市直达入口，一眼看清「快速开始」和「AI 对话」两种开始方式。
 - **快速开始**：11 座城市（北京 / 上海 / 广州 / 杭州 / 西安 / 成都 / 重庆 / 长沙 / 青岛 / 厦门 / 南京）配手绘城市插画，纯 CSS 3D + `requestAnimationFrame` 弹簧动画实现真实翻书效果，支持拖拽、键盘与点击城市直达。
-- **AI 对话**：像聊天一样说出目的地、天数、同行人和偏好，支持多会话管理、流式回复、停止与重新生成；聊清楚之后可一键带着已确定的信息进入快速开始。
+- **AI 对话**：像聊天一样说出目的地、天数、同行人和偏好，支持多会话管理、流式回复、停止与重新生成；会话元数据存 PostgreSQL，对话内容快照由 LangGraph checkpointer 保存（`thread_id = session_id`），内置时间与 12306 MCP 工具，可直接问「今天几号」「北京到上海明天的高铁」；聊清楚之后可一键带着已确定的信息进入快速开始。
 - **跨入口衔接**：首页城市链接、对话页整理出的城市与偏好都会自动预填到快速开始表单，生成完成后再进入结果页，全程不需要重复填写。
 
 ### ✍️ 规划与结果
@@ -154,7 +154,16 @@ pip install -r requirements.txt
 HOST=0.0.0.0
 PORT=8000
 LOG_LEVEL=INFO
-CORS_ORIGINS=http://localhost:5173,http://localhost:3000
+CORS_ORIGINS=http://localhost:5173,http://127.0.0.1:5173,http://localhost:3000,http://127.0.0.1:3000
+LOG_JSON=false
+LOG_COLORS=true
+
+# PostgreSQL：业务数据 + LangGraph checkpointer（请改成真实账号）
+POSTGRES_HOST=127.0.0.1
+POSTGRES_PORT=5432
+POSTGRES_USER=postgres
+POSTGRES_PASSWORD=你的密码
+POSTGRES_DB=travel_agents
 
 OPENAI_API_KEY=sk-xxxx
 OPENAI_BASE_URL=https://dashscope.aliyuncs.com/compatible-mode/v1
@@ -172,9 +181,14 @@ UNSPLASH_ACCESS_KEY=
 UNSPLASH_SECRET_KEY=
 LANGSMITH_TRACING=false
 LANGSMITH_API_KEY=
+
+# MCP：时间 / 12306（默认开启；12306 首次调用会下载 npm 包）
+MCP_TIME_ENABLED=true
+MCP_12306_ENABLED=true
+MCP_INIT_TIMEOUT=60
 ```
 
-> 💡 向量库目录 `chroma_dir` / `md5_path` 已按代码位置自动推导到 `backend/app/api/`（`chroma_db/` / `md5.text`），无需手动改绝对路径；如需自定义仍可通过同名环境变量覆盖。
+> 💡 向量库目录 `chroma_dir` / `md5_path` / `corpus_dir` 默认在 `backend/app/data/`（`chroma_db/` / `md5.text` / `corpus/`），无需手动改绝对路径；如需自定义仍可通过同名环境变量覆盖。
 
 前端还需要在 `frontend/.env` 中配置地图 Key：
 
@@ -182,17 +196,23 @@ LANGSMITH_API_KEY=
 VITE_AMAP_WEB_JS_KEY=你的高德Web端JS API Key
 ```
 
-### 3. 启动后端（在仓库根目录执行）
+### 3. 初始化数据库并启动后端（在仓库根目录执行）
 
 ```bash
-python -m backend.app.api.main
+# 首次运行：创建 travel_agents 数据库、业务表与 LangGraph checkpoint 表
+python -m backend.app.scripts.init_db
+
+# 启动后端
+python -m backend.app.main
 ```
 
-启动时会先校验配置并连接高德 MCP，默认监听 `8000` 端口。需要热重载时使用：
+启动时会校验配置、连接 PostgreSQL、初始化 checkpointer，并连接高德 / 时间 / 12306 MCP，默认监听 `8000` 端口。需要热重载时使用：
 
 ```bash
-uvicorn backend.app.api.main:app --reload
+uvicorn backend.app.main:app --reload --loop backend.app.core.runtime:proactor_loop_factory
 ```
+
+> Windows 上 MCP stdio 需要 ProactorEventLoop，而 psycopg async 需要 SelectorEventLoop。应用主循环保持 Proactor，checkpointer 在独立 Selector 线程中运行（`core/database.py`），因此不需要改全局事件循环策略。
 
 ### 4. 启动前端
 
@@ -208,13 +228,19 @@ npm run dev
 
 | 方法 | 路径 | 说明 |
 |---|---|---|
-| GET | `/api/health` | 健康检查（含 MCP 就绪状态） |
-| POST | `/api/trip/plan` | 一次性生成旅行计划 |
-| POST | `/api/trip/plan/stream` | SSE 流式生成，实时推送节点进度 |
-| POST | `/api/knowledge/upload` | 上传文本 / 文件到当前会话知识库 |
-| GET | `/api/knowledge/list` | 列出当前会话已上传的资料 |
-| DELETE | `/api/knowledge/{doc_id}` | 删除当前会话的资料 |
-| POST | `/api/knowledge/admin/upload` | 管理端上传城市攻略（需 `X-Admin-Token`） |
+| GET | `/api/v1/health` | 健康检查（数据库 / checkpointer / 各 MCP 服务状态） |
+| POST | `/api/v1/sessions/ensure` | 校验 `user_id + session_id`；不存在则创建 |
+| POST | `/api/v1/sessions` | 创建会话 |
+| GET | `/api/v1/sessions?user_id=` | 会话列表 |
+| GET | `/api/v1/sessions/{id}?user_id=` | 会话详情（含消息） |
+| DELETE | `/api/v1/sessions/{id}?user_id=` | 删除会话 |
+| POST | `/api/v1/chat/stream` | AI 对话 SSE（token / done / error），消息由 checkpointer 保存 |
+| POST | `/api/v1/trip/plan` | 一次性生成旅行计划 |
+| POST | `/api/v1/trip/plan/stream` | SSE 流式生成，实时推送节点进度 |
+| POST | `/api/v1/knowledge/upload` | 上传文本 / 文件到当前用户知识库（Form `user_id`） |
+| GET | `/api/v1/knowledge/list?user_id=` | 列出当前用户已上传的资料 |
+| DELETE | `/api/v1/knowledge/{doc_id}?user_id=` | 删除当前用户的资料 |
+| POST | `/api/v1/knowledge/admin/upload` | 管理端上传城市攻略（需 `X-Admin-Token`） |
 
 **规划请求体示例**：
 
@@ -228,7 +254,20 @@ npm run dev
   "accommodation": "舒适型酒店",
   "preferences": ["自然风光", "美食"],
   "free_text_input": "希望旅行氛围浪漫、轻松、慢节奏",
-  "session_id": "当前浏览器会话标识"
+  "user_id": "浏览器匿名用户标识",
+  "session_id": "服务端会话 ID"
+}
+```
+
+**对话请求体示例**：
+
+```json
+{
+  "user_id": "浏览器匿名用户标识",
+  "session_id": "服务端会话 ID",
+  "message": "明天北京到上海的高铁还有票吗？",
+  "city": "上海",
+  "regenerate": false
 }
 ```
 
@@ -246,11 +285,11 @@ npm run dev
 
 ### 内置城市攻略
 
-11 座城市的攻略语料位于 `backend/app/api/data/*.txt`，向量化后存入 Chroma 持久化目录 `backend/app/api/chroma_db/`（集合名 `knowledge_base`，余弦距离）。新增或更新语料后重建向量库：
+11 座城市的攻略语料位于 `backend/app/data/corpus/*.txt`，向量化后存入 Chroma 持久化目录 `backend/app/data/chroma_db/`（集合名 `knowledge_base`，余弦距离）。用户上传与内置语料的文档元数据都记录在 PostgreSQL 的 `knowledge_documents` 表。新增或更新语料后重建向量库：
 
 ```bash
 # 在仓库根目录执行
-python -m backend.app.api.rag_file_uploader
+python -m backend.app.modules.knowledge.ingest_cli
 ```
 
 上传脚本按文件 MD5 去重，已入库文件自动跳过；若 Chroma 集合为空（首次入库或重建向量库），脚本会自动执行全量入库。切分策略为 500 字符 / 50 字符重叠，按中文标点优先断句。
@@ -264,7 +303,7 @@ python -m backend.app.api.rag_file_uploader
 - **格式**：Markdown、TXT、PDF、PNG / JPG / WEBP 图片，也可以直接粘贴文本。
 - **可选信息**：标题与城市；填写城市后，该资料会优先参与对应城市的规划检索。
 - **切块**：Markdown 按标题分节；表格逐行切块并重复表头；路线行按箭头保持完整；短段落自动合并到接近目标块大小。
-- **去重与隔离**：同一内容重复上传会直接返回已有记录；资料按浏览器本地会话隔离，仅本人可见。
+- **去重与隔离**：同一内容重复上传会直接返回已有记录；资料按浏览器匿名 `user_id` 隔离，仅本人可见。
 - **生效方式**：生成行程时与内置城市语料一起检索，无需重启后端。
 
 ## 📁 项目结构
@@ -272,39 +311,35 @@ python -m backend.app.api.rag_file_uploader
 ```text
 travel_agents/
 ├── backend/app/
-│   ├── api/
-│   │   ├── data/                    # 城市攻略语料（txt，11 城）
-│   │   ├── main.py                  # FastAPI 入口（健康检查 / 规划 / 流式规划）
-│   │   ├── knowledge.py             # 知识库上传 / 列表 / 删除 API
-│   │   ├── rag_file_uploader.py     # 内置语料向量化入库脚本
-│   │   ├── migrate_admin_metadata.py# 历史知识库 metadata 迁移
-│   │   ├── chroma_db/               # Chroma 向量库（本地持久化目录）
-│   │   └── md5.text                 # 已入库文件 MD5 去重记录
-│   ├── models/
-│   │   ├── request.py               # TripRequest
-│   │   ├── response.py              # TripPlan / Attraction / Hotel / Weather 等
-│   │   └── knowledge.py             # 知识库请求 / 响应模型
-│   ├── nodes/
-│   │   ├── attraction.py            # 景点搜索 + 结构化
-│   │   ├── hotel.py                 # 酒店搜索 + 解析
-│   │   ├── weather.py               # 天气查询
-│   │   ├── rag.py                   # HyDE 知识库检索
-│   │   ├── plan.py                  # 行程规划（结构化输出 + 确定性回填）
-│   │   ├── evaluation.py            # 评估反思（硬校验 + LLM 评估）
-│   │   ├── gate.py                  # 门控汇聚 / 路由
+│   ├── main.py                      # FastAPI 入口：structlog / lifespan / 路由 / 异常
+│   ├── core/
+│   │   ├── config.py                # Settings 聚合根（按模块分组的内部类）
+│   │   ├── logging.py               # structlog 配置与 get_logger
+│   │   ├── database.py              # SQLAlchemy async + LangGraph checkpointer
+│   │   ├── deps.py                  # get_db / 各 service 的 Depends
+│   │   ├── exceptions.py            # AppError 体系
+│   │   └── exception_handlers.py    # 全局 JSON 错误信封
+│   ├── integrations/
 │   │   ├── llm.py                   # LLM / Embedding 单例
-│   │   ├── utils.py                 # MCP 结果解析 / 距离 / 日期工具
-│   │   └── tools/
-│   │       └── amap_mcp_servers.py  # 高德 MCP 客户端（SSE）
-│   ├── services/
-│   │   ├── config.py                # pydantic-settings 配置
-│   │   ├── rag_component.py         # Chroma 单例与异步检索
-│   │   ├── knowledge_extractors.py  # MD / TXT / PDF / 图片内容抽取
-│   │   ├── knowledge_service.py     # 切块、去重与 Chroma 写入
-│   │   └── travel_plan_agent.py     # LangGraph 图定义（核心）
-│   ├── state.py                     # PlannerState 状态定义与 reducer
-│   ├── constants.py                 # 节点文案 / 轮次 / 并发等常量
-│   └── prompts.py                   # 各节点提示词
+│   │   ├── chroma.py                # Chroma 单例与异步检索
+│   │   └── mcp.py                   # 高德 / 时间 / 12306 MCP 管理
+│   ├── agent/
+│   │   ├── graph.py                 # LangGraph 图定义（核心）
+│   │   ├── state.py                 # PlannerState 状态定义与 reducer
+│   │   ├── constants.py             # 节点文案 / 轮次 / 并发等常量
+│   │   ├── prompts.py               # 各节点提示词
+│   │   └── nodes/                   # attraction / hotel / weather / rag / plan ...
+│   ├── modules/
+│   │   ├── health/                  # 健康检查
+│   │   ├── sessions/                # 用户 / 会话 / 消息（models/repository/service/router）
+│   │   ├── chat/                    # Agent / history(checkpointer) / SSE service
+│   │   ├── knowledge/               # 知识库（PG 元数据 + Chroma 向量 + ingest_cli）
+│   │   └── trip/                    # 行程规划（models/repository/service/router/schemas）
+│   ├── scripts/                     # init_db.py / migrate_admin_metadata.py
+│   └── data/
+│       ├── corpus/                  # 城市攻略语料（txt，11 城）
+│       ├── chroma_db/               # Chroma 向量库（受版本管理）
+│       └── md5.text                 # 已入库文件 MD5 去重记录
 ├── frontend/                        # Vue 3 + Vite 前端
 │   ├── src/
 │   │   ├── views/                   # Landing / QuickStart / Chat / Result
@@ -315,8 +350,8 @@ travel_agents/
 │   │   ├── composables/             # usePaperTheme（纸张主题）
 │   │   ├── assets/sketchbook/       # 11 城手绘插画
 │   │   ├── data/                    # sketchbookCities（选城配置）
-│   │   ├── services/api.ts          # 后端接口与 SSE 消费
-│   │   ├── store.ts                 # 轻量 reactive store（跨页状态 / 对话持久化）
+│   │   ├── services/api.ts          # /api/v1 接口与 SSE 消费
+│   │   ├── store.ts                 # 轻量 reactive store（userId / activeSession）
 │   │   ├── styles/                  # 全局 / 站点 / 翻书样式
 │   │   └── types/                   # TS 类型定义
 │   └── .env                         # VITE_AMAP_WEB_JS_KEY
