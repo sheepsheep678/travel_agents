@@ -43,16 +43,17 @@
 
 ### 📚 知识库
 
-- **上传自己的旅行资料**：支持粘贴文本，或上传 **MD / TXT / PDF / 图片（PNG / JPG / WEBP）**；图片会经 Qwen-VL 转写为 Markdown 后再入库。
-- **资料管理**：查看已上传资料的标题、预览、切块数量与城市，可随时删除；重复内容按内容指纹自动去重。
-- **隐私隔离**：上传内容保存在 Chroma 中，按浏览器本地会话隔离，只有自己能看到和检索。
-- **面向旅行的切块策略**：Markdown 按标题分节，表格逐行保留表头，`A→B→C` 路线行保持完整，避免把一条路线或一张表格切碎。
-- **参与规划**：生成行程时，当前城市的官方攻略语料与你上传的资料会一起被检索；检索出的必玩景点若未被地图工具覆盖，会自动触发补搜。
+- **上传自己的旅行资料**：支持粘贴文本，或上传 **MD / TXT / PDF / 图片（PNG / JPG / WEBP）**；PDF 走 MinerU 云端 Precision API（默认开启 OCR），图片经 Qwen-VL 转写为 Markdown，再由快模型统一整理 Markdown 排版。
+- **资料管理**：查看已上传资料的标题、预览、父块 / 子块数量与城市，可随时删除；重复内容按内容指纹自动去重。
+- **隐私隔离**：上传内容按浏览器匿名 `user_id` 隔离，只有自己能看到和检索。
+- **结构感知父子块**：Markdown 按 H1/H2 分父块、按 H3 与表格 / 路线 / 段落切子块；子块共享「文档标题 + 章节」信息，表格逐行保留表头，`A→B→C` 路线行保持完整。
+- **Milvus 混合检索**：子块写入 Milvus（id / 元数据 / 原始文本 / 稠密向量 / BM25 稀疏向量），查询时稠密与关键词多路召回 + Cross-Encoder 精排；命中子块后按 `parent_id` 回查 PostgreSQL 父块加入提示词。
+- **参与规划**：生成行程时，当前城市的官方攻略语料与你上传的资料会一起被检索；检索出的必玩景点若未被地图工具覆盖，会自动触发补搜。AI 对话也可通过 `search_knowledge` 工具查询知识库。
 
 ### 🤖 Agent 能力
 
 - **多源并行检索**：景点搜索、天气查询、RAG 知识库检索三路并行，景点详情并发拉取（信号量限流 + 自动重试）。
-- **HyDE 知识库检索**：LLM 先生成假设性答案文档再做向量检索，更容易命中攻略类语料；检索出的景点名未被工具覆盖时自动补搜。
+- **HyDE + 混合检索**：LLM 先生成假设性答案文档，再走 Milvus 稠密向量 + BM25 稀疏向量多路召回、条件过滤与 Cross-Encoder 精排；检索出的景点名未被工具覆盖时自动补搜。
 - **真实数据锚点选酒店**：以景点坐标为锚点做周边 3km 酒店搜索，用 Haversine 公式计算「距景点约 X km」。
 - **门控汇聚**：`plan_gate_node` 统一汇聚并行分支，景点 / 酒店 / 天气 / 知识库数据齐备后才放行规划，避免中间态提前规划。
 - **评估反思循环**：评估节点先做确定性硬校验（天数、每日景点、游览总时长、住宿），再交给 LLM 做合理性评估；不合格打回规划节点修订，最多 2 轮。
@@ -87,7 +88,7 @@ graph TD
 
 - **门控节点** `plan_gate_node`：三条并行分支全部汇聚到此，通过 `is_plan_ready()` 判定数据齐备后才放行规划；未齐备时本轮直接 END，剩余分支完成后会再次触发门控。
 - **状态 reducer**：景点名 / 知识库景点名使用集合并集，检索结果、酒店结果、历史计划等使用列表累加，支持多轮补搜与修订叠加而不是覆盖。
-- **知识库过滤下推**：城市语料与用户上传资料在 Chroma 查询阶段就按 metadata 过滤，避免把其他城市的资料或他人的私有资料带进规划。
+- **知识库过滤下推**：城市语料与用户上传资料在 Milvus 检索阶段就按 `scope / city / owner_id` 过滤，避免把其他城市的资料或他人的私有资料带进规划。
 - **可靠性**：关键节点（RAG / 规划 / 评估 / 景点结构化）配置 `RetryPolicy` 应对 LLM 偶发失败；结构化输出失败时回退到确定性模板。
 
 ## 🛠 技术栈
@@ -97,8 +98,8 @@ graph TD
 | Agent 编排 | LangGraph 1.x、LangChain 1.x |
 | 大模型 | LangChain `init_chat_model`（OpenAI 兼容接口，默认阿里云百炼 DashScope 通义千问，可替换任意兼容模型） |
 | 工具接入 | 高德地图 MCP（SSE 传输） |
-| RAG | Chroma 本地持久化、HyDE、DashScope Embedding |
-| 知识库解析 | Markdown / TXT、pypdf、DashScope Qwen-VL 图片转写 |
+| RAG | Milvus 3.x（稠密向量 + BM25 稀疏向量 + Cross-Encoder 精排）、PostgreSQL 父块、HyDE |
+| 知识库解析 | MinerU 云端 Precision API（OCR）、Markdown / TXT、pypdf、DashScope Qwen-VL 图片转写、LLM Markdown 排版优化 |
 | 后端 | FastAPI、Uvicorn、SSE（`astream_events`）、pydantic-settings |
 | 前端 | Vue 3、Vue Router、Vite、TypeScript、Ant Design Vue、高德地图 JS API 2.0、jspdf / html2canvas、CSS 3D 翻书动效 |
 | 可观测 | LangSmith 追踪（可选） |
@@ -145,6 +146,12 @@ pip install -r requirements.txt
 | `KNOWLEDGE_VLM_MODEL` | 图片知识库转写模型（如 Qwen-VL）；留空则不支持图片上传 |
 | `KNOWLEDGE_ADMIN_TOKEN` | 管理端知识库上传令牌（可选） |
 | `KNOWLEDGE_MAX_FILE_MB` / `KNOWLEDGE_MAX_TEXT_CHARS` | 单文件大小 / 文本长度上限，默认 `10` MB / `20000` 字 |
+| `MILVUS_URI` / `MILVUS_DB_NAME` / `MILVUS_COLLECTION` | Milvus 地址、数据库、子块集合名 |
+| `MILVUS_DENSE_DIM` / `MILVUS_DENSE_METRIC` | 稠密向量维度与度量，默认 `1024` / `COSINE` |
+| `MILVUS_RERANK_ENABLED` / `MILVUS_RERANK_MODEL` | 是否启用 Cross-Encoder 精排及模型（默认 `gte-rerank-v2`） |
+| `MINERU_ENABLED` / `MINERU_TOKEN` | MinerU 云端解析开关与 mineru.net API Token（失败自动回退 pypdf） |
+| `MINERU_OCR` / `MINERU_MODEL` / `MINERU_LANGUAGE` | 是否开启 OCR、解析模型（vlm/pipeline/html）、文档语言 |
+| `KNOWLEDGE_MARKDOWN_NORMALIZE` | 是否用快模型整理 Markdown 排版，默认 `true` |
 | `UNSPLASH_ACCESS_KEY` / `UNSPLASH_SECRET_KEY` | Unsplash 图片服务（可选） |
 | `LANGSMITH_TRACING` / `LANGSMITH_API_KEY` | LangSmith 追踪（可选） |
 
@@ -177,6 +184,23 @@ AMAP_API_KEY=xxxx
 KNOWLEDGE_VLM_MODEL=
 KNOWLEDGE_ADMIN_TOKEN=
 
+# Milvus（Docker Desktop）与混合检索
+MILVUS_URI=http://127.0.0.1:19530
+MILVUS_DB_NAME=default
+MILVUS_COLLECTION=knowledge_chunks
+MILVUS_DENSE_DIM=1024
+MILVUS_RERANK_ENABLED=true
+MILVUS_RERANK_MODEL=gte-rerank-v2
+
+# 文档解析（MinerU 云端 Precision API）
+MINERU_ENABLED=false
+MINERU_TOKEN=
+MINERU_OCR=true
+MINERU_MODEL=vlm
+MINERU_LANGUAGE=ch
+MINERU_TIMEOUT=300
+KNOWLEDGE_MARKDOWN_NORMALIZE=true
+
 UNSPLASH_ACCESS_KEY=
 UNSPLASH_SECRET_KEY=
 LANGSMITH_TRACING=false
@@ -188,7 +212,7 @@ MCP_12306_ENABLED=true
 MCP_INIT_TIMEOUT=60
 ```
 
-> 💡 向量库目录 `chroma_dir` / `md5_path` / `corpus_dir` 默认在 `backend/app/data/`（`chroma_db/` / `md5.text` / `corpus/`），无需手动改绝对路径；如需自定义仍可通过同名环境变量覆盖。
+> 💡 语料目录 `corpus_dir` 默认在 `backend/app/data/corpus/`；Milvus 入库账本 `md5_milvus.text` 也位于 `backend/app/data/`。
 
 前端还需要在 `frontend/.env` 中配置地图 Key：
 
@@ -199,14 +223,20 @@ VITE_AMAP_WEB_JS_KEY=你的高德Web端JS API Key
 ### 3. 初始化数据库并启动后端（在仓库根目录执行）
 
 ```bash
+# 0) 启动 Milvus（Windows Docker Desktop 单容器，已包含 embedded etcd + 本地存储）
+docker start milvus-standalone
+
 # 首次运行：创建 travel_agents 数据库、业务表与 LangGraph checkpoint 表
 python -m backend.app.scripts.init_db
+
+# 初始化 Milvus 数据库 / 集合 / BM25 函数 / 向量与标量索引
+python -m backend.app.scripts.init_milvus
 
 # 启动后端
 python -m backend.app.main
 ```
 
-启动时会校验配置、连接 PostgreSQL、初始化 checkpointer，并连接高德 / 时间 / 12306 MCP，默认监听 `8000` 端口。需要热重载时使用：
+启动时会校验配置、连接 PostgreSQL、初始化 checkpointer、初始化 Milvus 集合，并连接高德 / 时间 / 12306 MCP，默认监听 `8000` 端口。Milvus 不可用时不会阻断启动，知识库检索会降级为空上下文。需要热重载时使用：
 
 ```bash
 uvicorn backend.app.main:app --reload --loop backend.app.core.runtime:proactor_loop_factory
@@ -285,16 +315,45 @@ npm run dev
 
 ### 内置城市攻略
 
-11 座城市的攻略语料位于 `backend/app/data/corpus/*.txt`，向量化后存入 Chroma 持久化目录 `backend/app/data/chroma_db/`（集合名 `knowledge_base`，余弦距离）。用户上传与内置语料的文档元数据都记录在 PostgreSQL 的 `knowledge_documents` 表。新增或更新语料后重建向量库：
+11 座城市的攻略语料位于 `backend/app/data/corpus/*.txt`。入库流程：
+
+1. **解析**：PDF 走 MinerU 云端 Precision API（`MinerU(token).extract(..., ocr=True)`；失败自动回退 pypdf），图片走 Qwen-VL，MD/TXT 直接解码。
+2. **Markdown 优化**：快模型只整理标题层级、表格、断行与页眉页脚，不增删事实。
+3. **父子块切分**：按 H1/H2 分父块，父块内按 H3 / 表格 / 路线 / 段落切子块；子块文本加「文档标题 + 章节」前缀。
+4. **写入**：父块写 PostgreSQL `knowledge_parent_chunks`；子块写 Milvus（id / 元数据 / 原始文本 / 稠密向量 / BM25 稀疏向量）。同一 `doc_id` 会先删旧父块与旧子块，再加新数据。
 
 ```bash
-# 在仓库根目录执行
+# 在仓库根目录执行（首次先启动 Milvus 并初始化集合）
+python -m backend.app.scripts.init_milvus
 python -m backend.app.modules.knowledge.ingest_cli
+
+# 强制重建 / 只处理某座城市
+python -m backend.app.modules.knowledge.ingest_cli --force
+python -m backend.app.modules.knowledge.ingest_cli --city 青岛
 ```
 
-上传脚本按文件 MD5 去重，已入库文件自动跳过；若 Chroma 集合为空（首次入库或重建向量库），脚本会自动执行全量入库。切分策略为 500 字符 / 50 字符重叠，按中文标点优先断句。
+入库脚本使用 `md5_milvus.text` 账本去重；`--force` 会忽略账本并覆盖写入。集合被重建后账本会自动失效检测，缺失的文档会重新入库。
 
-> ⚠️ **入库后必须重启后端**。Chroma 的索引按持久化目录缓存在进程内，后端运行期间用另一个进程执行入库脚本，磁盘数据虽已更新但后端不会重新加载——此时检索会少返回结果，或直接抛 `InternalError: Error finding id`。停掉后端再入库（或入库后立即重启）即可。
+> **MinerU 启用方式**：`pip install "mineru-open-sdk>=0.2.5,<0.3"`（import 名是 `mineru`，
+> 不要与本地 `mineru` 包同时安装），在 `.env` 设置 `MINERU_ENABLED=true`、
+> `MINERU_TOKEN=<mineru.net Token>`、`MINERU_OCR=true`。Precision API 文件会上传到 mineru.net，
+> 单文件 ≤200MB、≤200 页；Token 缺失或解析失败时 PDF 自动回退 pypdf。
+> 图片始终优先走 `KNOWLEDGE_VLM_MODEL` 视觉模型，未配置时可用 MinerU OCR 兜底。
+
+> ⚠️ **集合 schema 创建后不可改**：修改字段、向量维度或距离度量需执行
+> `python -m backend.app.scripts.init_milvus --recreate`（会清空集合），然后重新入库。
+
+### 检索流程
+
+```
+查询 → HyDE（可选）→ 条件过滤（scope / city / owner_id）
+     → Milvus 稠密 top-N  +  Milvus BM25 top-N
+     → RRF 融合 → DashScope gte-rerank Cross-Encoder 精排
+     → 命中子块的 parent_id 回查 PostgreSQL 父块
+     → 父块正文加入提示词（AI 对话 / 行程规划）
+```
+
+Cross-Encoder 不可用（欠费、限流、网络）时自动回退 RRF 融合，并熔断 5 分钟，保证检索可用。
 
 ### 用户上传
 
@@ -302,9 +361,9 @@ python -m backend.app.modules.knowledge.ingest_cli
 
 - **格式**：Markdown、TXT、PDF、PNG / JPG / WEBP 图片，也可以直接粘贴文本。
 - **可选信息**：标题与城市；填写城市后，该资料会优先参与对应城市的规划检索。
-- **切块**：Markdown 按标题分节；表格逐行切块并重复表头；路线行按箭头保持完整；短段落自动合并到接近目标块大小。
+- **切块**：父块按 H1/H2 分节；子块按 H3 子标题、表格、路线与段落切分并合并；表格逐行保留表头，路线行保持完整。
 - **去重与隔离**：同一内容重复上传会直接返回已有记录；资料按浏览器匿名 `user_id` 隔离，仅本人可见。
-- **生效方式**：生成行程时与内置城市语料一起检索，无需重启后端。
+- **生效方式**：写入后立即可检索，无需重启后端（Milvus 写入后会 flush）。
 
 ## 📁 项目结构
 
@@ -321,7 +380,7 @@ travel_agents/
 │   │   └── exception_handlers.py    # 全局 JSON 错误信封
 │   ├── integrations/
 │   │   ├── llm.py                   # LLM / Embedding 单例
-│   │   ├── chroma.py                # Chroma 单例与异步检索
+│   │   ├── milvus.py                # Milvus 集合 / 稠密+BM25 / 精排 / CRUD
 │   │   └── mcp.py                   # 高德 / 时间 / 12306 MCP 管理
 │   ├── agent/
 │   │   ├── graph.py                 # LangGraph 图定义（核心）
@@ -333,13 +392,12 @@ travel_agents/
 │   │   ├── health/                  # 健康检查
 │   │   ├── sessions/                # 用户 / 会话 / 消息（models/repository/service/router）
 │   │   ├── chat/                    # Agent / history(checkpointer) / SSE service
-│   │   ├── knowledge/               # 知识库（PG 元数据 + Chroma 向量 + ingest_cli）
+│   │   ├── knowledge/               # 知识库：解析 / Markdown 优化 / 父子块 / 混合检索 / ingest_cli
 │   │   └── trip/                    # 行程规划（models/repository/service/router/schemas）
-│   ├── scripts/                     # init_db.py / migrate_admin_metadata.py
+│   ├── scripts/                     # init_db.py / init_milvus.py
 │   └── data/
 │       ├── corpus/                  # 城市攻略语料（txt，11 城）
-│       ├── chroma_db/               # Chroma 向量库（受版本管理）
-│       └── md5.text                 # 已入库文件 MD5 去重记录
+│       └── md5_milvus.text          # Milvus 入库 MD5 账本（运行时生成）
 ├── frontend/                        # Vue 3 + Vite 前端
 │   ├── src/
 │   │   ├── views/                   # Landing / QuickStart / Chat / Result
@@ -364,6 +422,7 @@ travel_agents/
 
 - [LangGraph](https://github.com/langchain-ai/langgraph) — 多智能体编排框架
 - [高德开放平台](https://lbs.amap.com/) — 地图与 MCP 服务
-- [阿里云百炼](https://bailian.console.aliyun.com/) — 通义千问模型与 Embedding 服务
-- [Chroma](https://www.trychroma.com/) — 本地向量数据库
+- [阿里云百炼](https://bailian.console.aliyun.com/) — 通义千问模型、Embedding 与 gte-rerank 精排服务
+- [Milvus](https://milvus.io/) — 稠密 + BM25 稀疏向量混合检索
+- [MinerU](https://github.com/opendatalab/MinerU) — PDF 版式解析与 OCR（云端 Precision API）
 - [Threeui](https://threeui.com/) — 手账翻书 3D 动效

@@ -77,7 +77,6 @@ def setup_logging(
     for name in (
         "httpx",
         "httpcore",
-        "chromadb",
         "urllib3",
         "asyncio",
         "mcp",

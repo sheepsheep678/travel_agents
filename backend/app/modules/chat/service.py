@@ -27,6 +27,7 @@ from backend.app.core.exceptions import (
     ConfigurationError,
     NotFoundError,
 )
+from backend.app.core.llm_errors import format_llm_error, llm_error_kind
 from backend.app.core.logging import get_logger
 from backend.app.modules.chat.agent import chat_config, get_chat_agent
 from backend.app.modules.chat.schemas import ChatRequest
@@ -77,7 +78,7 @@ class ChatService:
                 "对话需要 PostgreSQL checkpointer，请确认数据库已启动并执行过 init_db"
             )
 
-        agent = get_chat_agent(request.city or session.city)
+        agent = get_chat_agent(request.city or session.city, request.user_id)
         config = chat_config(session.id)
 
         if request.regenerate:
@@ -160,5 +161,16 @@ class ChatService:
             logger.info("对话流被取消", session_id=session.id)
             raise
         except Exception as exc:
-            logger.exception("对话流式生成失败", session_id=session.id)
-            yield _sse({"type": "error", "message": f"生成回复失败: {exc}"})
+            kind = llm_error_kind(exc)
+            message = format_llm_error(exc)
+            if kind:
+                # 欠费/未开通/Key 失效属于上游账户问题，不打完整堆栈
+                logger.warning(
+                    "对话流式生成失败（上游账户/权限问题）",
+                    session_id=session.id,
+                    kind=kind,
+                    error=message,
+                )
+            else:
+                logger.exception("对话流式生成失败", session_id=session.id)
+            yield _sse({"type": "error", "message": message})

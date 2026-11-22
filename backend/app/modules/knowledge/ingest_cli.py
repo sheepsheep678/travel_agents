@@ -1,182 +1,160 @@
+"""管理端语料入库（Milvus + PostgreSQL 父子块）。
+
+用法（仓库根目录）：
+    python -m backend.app.modules.knowledge.ingest_cli
+    python -m backend.app.modules.knowledge.ingest_cli --force
+    python -m backend.app.modules.knowledge.ingest_cli --city 青岛
+
+流程：MinerU/pypdf/Qwen-VL 解析 → 大模型 Markdown 排版 → 结构感知父块
+→ 递归子块 → 父块写 PostgreSQL → 子块写 Milvus（稠密 + BM25 稀疏）。
+每个文件的 doc_id 固定为 ``admin:{城市}``，写入前先删旧父块/子块再加。
+"""
+
+from __future__ import annotations
+
+import argparse
+import asyncio
 import glob
 import hashlib
-import logging
+import json
 import os
-import re
-from datetime import datetime, timezone
-
-from langchain_community.document_loaders import PyPDFLoader, TextLoader
-from langchain_core.documents import Document
-from langchain_text_splitters import RecursiveCharacterTextSplitter
+from pathlib import Path
 
 from backend.app.core.config import settings
-from backend.app.integrations.chroma import get_vector_store
+from backend.app.core.database import close_database, init_database
+from backend.app.core.logging import get_logger, setup_logging
+from backend.app.integrations.milvus import (
+    acount,
+    close_milvus,
+    init_milvus,
+    stats,
+)
+from backend.app.modules.knowledge.service import KnowledgeService
+from backend.app.core.database import get_session_factory
 
-logger = logging.getLogger(__name__)
-
-# langchain-chroma 的 add_texts 不切批，会把整批文本一次性交给
-# DashScopeEmbeddings.embed_documents（单次 HTTP 请求）；保守分批更稳，失败时也能定位批次。
-INGEST_BATCH_SIZE = 10
-
-
-def _derive_title(text: str, path: str) -> str:
-    for line in (text or "").splitlines():
-        candidate = line.strip().lstrip("#").strip()
-        if candidate:
-            return candidate[:60]
-    return os.path.splitext(os.path.basename(path))[0] or "管理端资料"
+logger = get_logger(__name__)
 
 
-def _preview(text: str, limit: int = 120) -> str:
-    return re.sub(r"\s+", " ", text or "").strip()[:limit]
+def _file_md5(path: str) -> str:
+    digest = hashlib.md5()
+    with open(path, "rb") as handle:
+        for chunk in iter(lambda: handle.read(4096), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
 
 
-def _collection_is_empty() -> bool:
-    """集合内一个向量都没有则返回 True。
-
-    md5.text 账本只按「源文件内容」去重，与向量库状态无关。向量库被删除（本次迁移、
-    或误删 chroma_dir）时账本里仍记着全部 11 个文件，直接跳过会导致「一条都没入库」
-    且不报错。这里识别这种不一致并强制全量重建。
-    """
-    try:
-        return len(get_vector_store().get(limit=1)["ids"]) == 0
-    except Exception as e:  # 目录不存在 / 客户端异常：按空库处理，触发全量入库
-        logger.warning("读取 Chroma 集合状态失败，按空库处理: %s", e)
-        return True
+def _load_ledger(path: str) -> set[str]:
+    if not os.path.exists(path):
+        Path(path).parent.mkdir(parents=True, exist_ok=True)
+        Path(path).touch()
+        return set()
+    with open(path, "r", encoding="utf-8") as handle:
+        return {line.strip() for line in handle if line.strip()}
 
 
-def load_file(path: str) -> list[Document]:
-    """根据扩展名加载 txt / pdf；不支持的类型返回 None"""
-    if path.lower().endswith(".pdf"):
-        return PyPDFLoader(path).load()
-    elif path.lower().endswith(".txt"):
-        return TextLoader(path, encoding="utf-8").load()
-    else:
-        return None
+def _save_ledger(path: str, md5: str) -> None:
+    with open(path, "a", encoding="utf-8") as handle:
+        handle.write(md5 + "\n")
 
 
-def check_md5_hex(md5_for_check: str):
-    if not os.path.exists(settings.rag.md5_path):
-        # 创建文件
-        open(settings.rag.md5_path, "w", encoding="utf-8").close()
-        return False
-    # md5 没处理过
-    with open(settings.rag.md5_path, "r", encoding="utf-8") as f:
-        return md5_for_check in {line.strip() for line in f if line.strip()}
+async def _ingest_all(force: bool, city_filter: str = "") -> int:
+    await init_database()
+    if not init_milvus():
+        raise SystemExit("Milvus 初始化失败，请确认容器已启动")
 
+    # 集合被重建（--recreate / 容器数据清空）时，账本仍可能是满的；
+    # 这时必须忽略账本做全量入库，否则会「一条都没入库」却不报错。
+    if not force:
+        try:
+            if await acount() == 0:
+                logger.warning("Milvus 集合为空，忽略账本执行全量入库")
+                force = True
+        except Exception as exc:
+            logger.warning("读取 Milvus 集合状态失败，按空库处理: %s", exc)
+            force = True
 
-def save_md5_hex(md5_for_check: str):
-    with open(settings.rag.md5_path, "a", encoding="utf-8") as f:
-        f.write(md5_for_check + "\n")
+    ledger = _load_ledger(settings.rag.md5_milvus_path)
+    files = [
+        path
+        for path in glob.glob(
+            os.path.join(settings.rag.corpus_dir, "**/*"), recursive=True
+        )
+        if os.path.isfile(path) and path.lower().endswith((".txt", ".pdf"))
+    ]
+    if city_filter:
+        files = [
+            path
+            for path in files
+            if Path(path).stem == city_filter
+            or city_filter in Path(path).stem
+        ]
+    if not files:
+        logger.warning("没有找到待入库语料", corpus_dir=settings.rag.corpus_dir)
+        return 0
 
-
-def get_file_md5_hex(filepath: str):  # 获取文件的md5的十六进制字符串
-    if not os.path.exists(filepath):
-        logger.warning("[md5计算]文件%s不存在", filepath)
-        return
-
-    if not os.path.isfile(filepath):
-        logger.warning("[md5计算]路径%s不是文件", filepath)
-        return
-
-    md5_obj = hashlib.md5()
-
-    chunk_size = 4096  # 4KB分片，避免文件过大爆内存
-    try:
-        with open(filepath, "rb") as f:  # 必须二进制读取
-            while chunk := f.read(chunk_size):
-                md5_obj.update(chunk)
-    except Exception as e:
-        logger.error("计算文件%s的md5失败: %s", filepath, e)
-        return None
-
-    md5_hex = md5_obj.hexdigest()
-    return md5_hex
-
-
-def build_from_dir(docs_dir: str):
-    """遍历目录，加载并切分所有 txt/pdf 文档"""
-    splitter = RecursiveCharacterTextSplitter(
-        chunk_size=500,
-        chunk_overlap=50,
-        separators=["\n\n", "\n", "。", "！", "？", "，", " "],
-    )
-    all_docs = []
-    pending_md5 = []
-    force_rebuild = _collection_is_empty()
-    if force_rebuild:
-        logger.warning("Chroma 集合为空或不可读，忽略 MD5 账本，执行全量入库")
-    for f in glob.glob(os.path.join(docs_dir, "**/*"), recursive=True):
-        if os.path.isfile(f) and f.lower().endswith((".txt", ".pdf")):
-            md5_hex = get_file_md5_hex(f)
-            if not force_rebuild and check_md5_hex(md5_hex):
-                logger.info("跳过: %s: 已在本地知识库中", f)
-                continue
-            # 城市 = 文件名（不含扩展名），例如 北京.txt → 北京
-            city = os.path.splitext(os.path.basename(f))[0]
-            logger.info("加载: %s (城市: %s)", f, city)
+    factory = get_session_factory()
+    failed = 0
+    written = 0
+    for path in sorted(files):
+        city = Path(path).stem
+        md5 = _file_md5(path)
+        if not force and md5 in ledger:
+            # 账本有记录但集合里没有该文档（例如集合重建后只恢复了部分）时仍入库
             try:
-                docs = load_file(f)
-                if not docs:
-                    continue
-                title = _derive_title(docs[0].page_content, f)
-                preview = _preview(docs[0].page_content)
-                source_type = "pdf" if f.lower().endswith(".pdf") else "md"
-                for d in docs:
-                    d.metadata.update({
-                        "city": city,
-                        "scope": "admin",
-                        "owner_id": "admin",
-                        "visibility": "public",
-                        "source_type": source_type,
-                        "doc_id": f"admin:{city}",
-                        "title": title,
-                        "preview": preview,
-                        "chunk_policy_version": "admin_v1",
-                    })
-                # split_documents 会把 metadata 继承给每个 chunk
-                chunks = splitter.split_documents(docs)
-                total = len(chunks)
-                created_at = datetime.now(timezone.utc).isoformat()
-                for index, chunk in enumerate(chunks):
-                    chunk.metadata.update({
-                        "chunk_index": index,
-                        "chunk_total": total,
-                        "content_hash": hashlib.sha256(
-                            chunk.page_content.encode("utf-8")
-                        ).hexdigest(),
-                        "created_at": created_at,
-                        "extraction_method": "text",
-                        "block_type": "paragraph",
-                        "section": "",
-                    })
-                all_docs.extend(chunks)
-                pending_md5.append(md5_hex)
-            except Exception as e:
-                logger.warning("跳过 %s: %s", f, e)
+                doc_filter = f"doc_id == {json.dumps(f'admin:{city}', ensure_ascii=False)}"
+                present = await acount(doc_filter)
+            except Exception:
+                present = 0
+            if present > 0:
+                logger.info("跳过（账本已记录且集合存在）", file=path, city=city)
+                continue
+            logger.warning("账本已记录但集合缺失，重新入库", file=path, city=city)
 
-    logger.info("共切分出 %d 个 chunk", len(all_docs))
-    if not all_docs:
-        logger.info("没有新文档需要写入")
-        return None
+        logger.info("开始入库", file=path, city=city)
+        try:
+            async with factory() as db:
+                service = KnowledgeService(db)
+                item = await service.ingest_admin_file(path, city=city, force=True)
+            written += 1
+            _save_ledger(settings.rag.md5_milvus_path, md5)
+            logger.info(
+                "入库完成",
+                city=city,
+                doc_id=item.doc_id,
+                parents=item.parent_count,
+                children=item.chunk_count,
+            )
+        except Exception as exc:
+            failed += 1
+            logger.exception("入库失败", file=path, city=city, error=str(exc))
 
-    # 2. 写入 Chroma 向量库（集合配置与嵌入模型由 get_vector_store 统一提供）
-    vec_store = get_vector_store()
-    for start in range(0, len(all_docs), INGEST_BATCH_SIZE):
-        batch = all_docs[start: start + INGEST_BATCH_SIZE]
-        vec_store.add_documents(batch)
-        logger.info("已写入 %d/%d 个 chunk",
-                    min(start + INGEST_BATCH_SIZE, len(all_docs)), len(all_docs))
-    for md5 in pending_md5:
-        save_md5_hex(md5)
-    logger.info("写入完成 -> %s（集合 %s，共 %d 个 chunk）",
-                settings.rag.chroma_dir, settings.rag.collection, len(all_docs))
-    return vec_store
+    logger.info(
+        "全部处理完成",
+        written=written,
+        failed=failed,
+        milvus=stats(),
+    )
+    return 1 if failed else 0
+
+
+async def _run(force: bool, city_filter: str) -> int:
+    try:
+        return await _ingest_all(force=force, city_filter=city_filter)
+    finally:
+        await close_database()
+        close_milvus()
+
+
+def main() -> None:
+    parser = argparse.ArgumentParser(description="管理端语料入库（Milvus 父子块）")
+    parser.add_argument("--force", action="store_true", help="忽略账本，强制重新入库")
+    parser.add_argument("--city", default="", help="只处理指定城市（文件名，不含扩展名）")
+    args = parser.parse_args()
+
+    setup_logging()
+    code = asyncio.run(_run(force=args.force, city_filter=args.city))
+    raise SystemExit(code)
 
 
 if __name__ == "__main__":
-    from backend.app.core.logging import setup_logging
-
-    setup_logging()
-    data_dir = settings.rag.corpus_dir
-    build_from_dir(data_dir)   # 把你的 txt/pdf 放这个目录
+    main()

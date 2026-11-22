@@ -15,6 +15,7 @@ from backend.app.agent.nodes import attraction, evaluation, gate, hotel, plan, r
 from backend.app.agent.constants import NODE_LABELS, NODE_RETRY_ATTEMPTS
 from backend.app.agent.state import PlannerState, initial_state
 from backend.app.core.database import get_checkpointer
+from backend.app.core.llm_errors import format_llm_error
 from backend.app.core.logging import get_logger
 from backend.app.integrations.llm import get_fast_llm, get_llm
 from backend.app.integrations.mcp import get_mcp_tools
@@ -185,7 +186,7 @@ class TravelPlanAgent:
             yield {
                 "type": "done",
                 "success": False,
-                "message": f"旅行规划执行失败: {exc}",
+                "message": format_llm_error(exc),
                 "data": None,
             }
             return
@@ -212,6 +213,11 @@ class TravelPlanAgent:
             return {"weather_count": len(output.get("weather_result") or [])}
         if name == "attraction_tool_node":
             return {"new_names": len(output.get("attraction_names") or set())}
+        if name == "rag_info_node":
+            return {
+                "hit_count": output.get("rag_hit_count") or 0,
+                "retrieval": output.get("rag_backend") or "",
+            }
         if name == "evaluation_node":
             return {"passed": output.get("eval_passed"), "round": output.get("eval_round")}
         return {}

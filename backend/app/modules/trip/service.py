@@ -12,6 +12,7 @@ from backend.app.agent.graph import get_travel_plan_agent
 from backend.app.agent.state import initial_state
 from backend.app.core.database import get_session_factory
 from backend.app.core.exceptions import BadRequestError
+from backend.app.core.llm_errors import format_llm_error
 from backend.app.core.logging import get_logger
 from backend.app.modules.sessions.service import SessionService
 from backend.app.modules.trip.models import TripPlanRecord
@@ -104,11 +105,12 @@ class TripService:
         try:
             result = await agent.ainvoke(state, config=config)
         except Exception as exc:
-            await self._set_status(record.id, "failed", error=str(exc))
+            message = format_llm_error(exc)
+            await self._set_status(record.id, "failed", error=message)
             logger.exception("旅行规划执行失败", record_id=record.id)
             return TripPlanResponse(
                 success=False,
-                message=f"旅行规划执行失败: {exc}",
+                message=message,
                 data=None,
             )
 

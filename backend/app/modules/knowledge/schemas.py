@@ -13,6 +13,7 @@ class KnowledgeItem(BaseModel):
     preview: str = ""
     source_type: str = "txt"
     chunk_count: int = 1
+    parent_count: int = 0
     city: Optional[str] = ""
     source: Optional[str] = ""
     created_at: str = ""

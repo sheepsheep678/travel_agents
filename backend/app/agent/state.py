@@ -42,6 +42,8 @@ class PlannerState(TypedDict):
     parse_error: Annotated[list[ErrorResponse], _add_list]
     rag_result: str
     rag_attraction_names: Annotated[set[str], _add_set]
+    rag_hit_count: int
+    rag_backend: str
 
 
 def initial_state() -> dict:
@@ -74,4 +76,6 @@ def initial_state() -> dict:
         "parse_error": [],
         "rag_result": "",
         "rag_attraction_names": set(),
+        "rag_hit_count": 0,
+        "rag_backend": "",
     }

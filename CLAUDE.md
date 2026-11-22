@@ -1,6 +1,6 @@
 # 旅迹智绘（Travel-agents）Rules
 
-基于 LangGraph 多智能体工作流的 AI 旅行规划系统：FastAPI 后端（`backend/app`）+ Vue 3/Vite 前端（`frontend`）。高德地图 MCP 提供真实 POI/天气数据，时间 MCP 与 12306 MCP 供对话助手查询实时信息，本地 Chroma 知识库存放 11 座城市的攻略语料，PostgreSQL 存储用户/会话/消息/知识库元数据与 LangGraph checkpointer。
+基于 LangGraph 多智能体工作流的 AI 旅行规划系统：FastAPI 后端（`backend/app`）+ Vue 3/Vite 前端（`frontend`）。高德地图 MCP 提供真实 POI/天气数据，时间 MCP 与 12306 MCP 供对话助手查询实时信息，Milvus 存放知识库子块（稠密 + BM25 稀疏向量），PostgreSQL 存储用户/会话/消息/知识库元数据/父块与 LangGraph checkpointer。
 
 品牌名是「旅迹智绘」，但前端内部的 `sketchbook` / `sb-*` 命名是刻意保留的，不要为统一品牌而批量改名。
 
@@ -9,8 +9,8 @@
 - Backend: Python / FastAPI / LangGraph / LangChain / PostgreSQL（SQLAlchemy async + asyncpg）
 - Checkpointer: `langgraph-checkpoint-postgres` + `psycopg`（AsyncPostgresSaver）
 - Logging: structlog（彩色控制台 / 可选 JSON），只在 `main.py` 配置一次
-- RAG: Chroma 本地持久化（余弦距离，按 `city` metadata 过滤）+ HyDE
-- Data Source: 高德地图 MCP（SSE）、时间 MCP（stdio）、12306 MCP（stdio，`npx -y 12306-mcp`）
+- RAG: Milvus 3.x（稠密 COSINE + BM25 稀疏向量 + jieba 分析器）+ 条件过滤 + RRF 融合 + DashScope `gte-rerank` Cross-Encoder 精排；父块存 PostgreSQL
+- Data Source: 高德地图 MCP（SSE）、时间 MCP（stdio）、12306 MCP（stdio，`npx -y 12306-mcp`）、Milvus（Docker Desktop，`http://127.0.0.1:19530`）
 - Frontend: Vue 3 + TypeScript + Vite + Vue Router（`frontend/`）
 - State: `src/store.ts` 轻量 `reactive` store（**不是 Pinia**）；会话与消息以服务端为准
 - Export: 高德 JS API 2.0 / PDF / PNG
@@ -21,19 +21,18 @@
 backend/app/
   main.py                 # 唯一入口：structlog、lifespan、路由挂载、全局异常
   core/                   # config / logging / database / deps / exceptions
-  integrations/           # llm / chroma / mcp（外部服务适配）
+  integrations/           # llm / milvus / mcp（外部服务适配）
   agent/                  # LangGraph 图、state、prompts、constants、nodes/
   modules/
     health/               # GET /api/v1/health
     sessions/             # models / repository / schemas / service / router
     chat/                 # agent / history(checkpointer) / SSE service
-    knowledge/            # 知识库 PG 元数据 + Chroma 向量 + ingest_cli
+    knowledge/            # 解析 / chunking / markdown / retrieval / PG 父块 + Milvus 子块 / ingest_cli
     trip/                 # 行程规划 models / repository / service / router / schemas
-  scripts/                # init_db.py / migrate_admin_metadata.py
+  scripts/                # init_db.py / init_milvus.py
   data/
     corpus/               # 11 座城市 txt 语料（文件名即 city）
-    chroma_db/            # Chroma 持久化（受版本管理，勿重新入库弄脏）
-    md5.text              # 语料入库去重账本
+    md5_milvus.text       # Milvus 入库去重账本（运行时生成）
 ```
 
 ## Commands
@@ -41,10 +40,13 @@ backend/app/
 除注明外，均在仓库根目录执行（Python 代码使用绝对导入 `backend.app.*`，CWD 必须是仓库根目录）。
 
 - 初始化 PostgreSQL（建库 + 建表 + checkpointer）：`python -m backend.app.scripts.init_db`
+- 启动 Milvus 容器（Windows Docker Desktop）：`docker start milvus-standalone`
+- 初始化 Milvus 数据库 / 集合 / BM25 函数 / 索引：`python -m backend.app.scripts.init_milvus`
+- 重建 Milvus 集合（会清空向量）：`python -m backend.app.scripts.init_milvus --recreate`
 - 启动后端（默认 8000 端口）：`python -m backend.app.main`
 - 启动前端（5173 端口，需先 `npm install`）：`cd frontend && npm run dev`
 - 类型检查 + 生产构建：`cd frontend && npm run build`
-- 重建 RAG 向量库（执行后必须重启后端）：`python -m backend.app.modules.knowledge.ingest_cli`
+- 管理端语料入库（父子块 → PG + Milvus）：`python -m backend.app.modules.knowledge.ingest_cli`（`--force` 忽略账本，`--city 青岛` 只处理一城）
 - 不经 HTTP，直接跑整张图调试（内置青岛 3 天示例）：`python -m backend.app.agent.graph`
 - 验证 MCP 工具加载（高德 / 时间 / 12306）：`python -m backend.app.integrations.mcp`
 - 需要热重载时：`uvicorn backend.app.main:app --reload --loop backend.app.core.runtime:proactor_loop_factory`（Windows 下必须显式指定，见“事件循环”一节）
@@ -55,13 +57,13 @@ backend/app/
 
 ### 请求与生命周期
 
-`backend/app/main.py` 是唯一入口：`setup_logging()` 只在这里调用一次；lifespan 依次执行 `validate_config()` → `init_database()`（连接 PG、`create_all`、初始化 checkpointer）→ `init_mcp_async()`（高德/时间/12306 独立初始化，单服务失败不阻断启动）。关闭时先 `close_mcp()` 再 `close_database()`。
+`backend/app/main.py` 是唯一入口：`setup_logging()` 只在这里调用一次；lifespan 依次执行 `validate_config()` → `init_database()`（连接 PG、`create_all`、初始化 checkpointer）→ `init_milvus()`（建集合/索引，失败不阻断，检索降级为空上下文）→ `init_mcp_async()`（高德/时间/12306 独立初始化，单服务失败不阻断启动）。关闭时依次 `close_mcp()` → `close_milvus()` → `close_database()`。
 
 所有业务路由挂载在 `/api/v1` 下：
 
 | 模块 | 路径 | 说明 |
 | --- | --- | --- |
-| health | `GET /api/v1/health` | 数据库、checkpointer、各 MCP 服务状态 |
+| health | `GET /api/v1/health` | 数据库、checkpointer、Milvus、各 MCP 服务状态 |
 | sessions | `/api/v1/sessions` | 创建 / ensure / 列表 / 详情 / 删除 |
 | chat | `POST /api/v1/chat/stream` | 对话 SSE（token / done / error） |
 | knowledge | `/api/v1/knowledge/*` | 用户上传 / 列表 / 删除；管理端上传 |
@@ -153,13 +155,19 @@ data: {"type":"error","message":"..."}
 
 不要再新增 `chat_messages` 表或手动搬运消息；checkpointer 是消息快照的唯一事实来源。
 
-### RAG
+### RAG（Milvus 父子块 + 混合检索）
 
-`agent/nodes/rag.py` 做 HyDE：LLM 生成假设性答案文档 → Chroma 检索 → LLM 提取景点名。`integrations/chroma.py` 持有 Chroma 单例并按 `city` metadata 过滤；用户文档按 `owner_id = user_id` 过滤。
+`agent/nodes/rag.py` 做 HyDE：快模型生成假设性答案文档 → `modules/knowledge/retrieval.py` 混合检索 → LLM 提取景点名。检索过滤语义与旧版一致：管理端内容按 `city`，用户内容按 `owner_id = user_id`，两者用 `or` 合并。
 
-**入库脚本和查询侧必须共用 `get_vector_store()`**，保证集合名、距离度量、嵌入模型完全一致。集合创建后配置不可改（默认余弦距离），切换需删除 `data/chroma_db` 重新入库。`chroma_dir` / `md5_path` / `corpus_dir` 默认在 `backend/app/data/`。
+- **文档解析**：PDF 走 MinerU 云端 Precision API（`mineru-open-sdk` 的 `MinerU(token).extract(..., ocr=True)`，`MINERU_TOKEN` 必填），失败回退 pypdf；图片优先 Qwen-VL，失败时可用 MinerU OCR 兜底。文件会上传到 mineru.net。
+- **Milvus 子块集合**（`integrations/milvus.py`，默认 `knowledge_chunks`）：字段 `id` / 元数据（`doc_id` / `parent_id` / `scope` / `owner_id` / `city` / `title` / `section` / `block_type` 等）/ 原始文本 `content` / 检索文本 `text` / 稠密向量 `dense` / 稀疏向量 `sparse`。`text` 开启 jieba 分析器并绑定服务端 **BM25 Function**，写入时只需给 `text` + `dense`；稠密 / 稀疏 / id / 过滤字段分别建索引。
+- **父块表**：`knowledge_parent_chunks`（`modules/knowledge/models.py`），只存 PostgreSQL，不进入 Milvus。子块 metadata 的 `parent_id`（`{doc_id}:p{index}`）用于回查父块，父块正文加入提示词做增强。
+- **切分**：`modules/knowledge/chunking.py` 先按 H1/H2 分父块，父块内按 H3 子标题、表格、路线、段落切子块；子块文本前缀「文档标题 + 章节」，表格逐行保留表头，路线行保持完整。
+- **写入**：`KnowledgeService.ingest()` 先删同 `doc_id` 的 Milvus 子块和 PG 父块/文档行，再加新数据（先删再加）。管理端语料 `doc_id = admin:{城市}`，用户文档使用随机 hex。
+- **混合检索**：稠密 top-N + BM25 top-N → RRF 融合 → DashScope `gte-rerank` Cross-Encoder 精排；精排失败自动回退 RRF 并熔断 5 分钟。Milvus 不可用时返回空结果，规划继续但无知识库上下文。
+- **对话工具**：`modules/chat/agent.py` 的 create_agent 挂载 `search_knowledge` 工具，按当前 `city + user_id` 绑定过滤条件；对话回答涉及攻略细节时优先调用。
 
-⚠️ **入库后必须重启后端**：Chroma 索引按持久化目录缓存在进程内，后端运行期间用另一进程入库会导致检索缺结果，或抛 `InternalError: Error finding id`。
+**Milvus schema 创建后不可改**：修改字段、维度或度量必须 `init_milvus --recreate`（会清空集合）后重新入库。Milvus 写入后会 flush，入库后无需重启后端。
 
 ### 行程 SSE 进度
 
@@ -178,7 +186,9 @@ data: {"type":"error","message":"..."}
 
 ### 配置与环境变量
 
-- 后端读仓库根目录 `.env`（pydantic-settings，`core/config.py`）：`POSTGRES_HOST` / `POSTGRES_PORT` / `POSTGRES_USER` / `POSTGRES_PASSWORD` / `POSTGRES_DB` / `OPENAI_API_KEY` / `OPENAI_BASE_URL` / `OPENAI_MODEL_ID` / `EMBEDDING_MODEL_NAME` / `AMAP_API_KEY` / `HOST` / `PORT` / `CORS_ORIGINS` / `LOG_LEVEL` / `MCP_*` 等。
+- 后端读仓库根目录 `.env`（pydantic-settings，`core/config.py`）：`POSTGRES_*` / `OPENAI_*` / `EMBEDDING_MODEL_NAME` / `AMAP_API_KEY` / `HOST` / `PORT` / `CORS_ORIGINS` / `LOG_LEVEL` / `MCP_*` / `MILVUS_URI` / `MILVUS_DB_NAME` / `MILVUS_COLLECTION` / `MILVUS_DENSE_DIM` / `MILVUS_RERANK_*` / `MINERU_*` / `KNOWLEDGE_MARKDOWN_NORMALIZE` 等。
+- `settings.milvus` 是独立配置组（`Milvus`）；默认 `http://127.0.0.1:19530`、`knowledge_chunks`、稠密 1024 维 COSINE、BM25 稀疏、`gte-rerank-v2`。项目只使用 Milvus，没有其他向量库后端。
+- Milvus 采用 Windows Docker Desktop 单容器模式（`milvus-standalone`，内含 embedded etcd + 本地存储），端口 `19530` / `9091` / `2379`；集合由 `init_milvus` 或应用启动时创建。
 - `settings.database.url` / `checkpoint_url` 由 `build_url()` 自动拼接：前者是 `postgresql+asyncpg://`（SQLAlchemy 元数据增删改查），后者是 `postgresql://`（psycopg checkpointer）。用户名/密码会做 URL 编码；默认值为 `127.0.0.1` / `5432` / `postgres` / `postgres` / `travel_agents`，部署时用 `POSTGRES_*` 覆盖。
 - **Windows 事件循环**：MCP stdio 子进程需要 `ProactorEventLoop`，psycopg async 需要 `SelectorEventLoop`。应用主循环保持 Proactor，`core/database.py` 在独立 Selector 线程里运行 checkpointer 连接池，并把 `aget_tuple` / `aput` / `aput_writes` / `adelete_thread` 等 async 方法代理回来。uvicorn 的 `loop` 用 `backend.app.core.runtime:proactor_loop_factory`。
 - 前端读 `frontend/.env` 的 `VITE_AMAP_WEB_JS_KEY`。它和后端 `AMAP_API_KEY` 是两把不同的 Key（Web 端 JS API vs 服务端）。
@@ -193,8 +203,13 @@ data: {"type":"error","message":"..."}
 - 新增图节点必须加入 `agent/constants.py` 的 `NODE_LABELS`，否则前端收不到该节点的 SSE 事件。
 - 新增业务接口放在 `modules/<module>/router.py`，挂载时统一加 `/api/v1` 前缀，并用 `Depends` 注入 service 与 DB session。
 - 业务错误抛 `AppError` 子类，不要在各层重复拼 `HTTPException` 响应。
-- 入库脚本和查询侧必须共用 `get_vector_store()`，保证集合名、距离度量、嵌入模型一致。
-- 重新入库后必须重启后端（Chroma 进程内缓存）。
+- 知识库入库必须走 `KnowledgeService`：父块写 `knowledge_parent_chunks`，子块写 Milvus；**父块不要写入 Milvus**。
+- 写入同一 `doc_id` 前必须先删旧数据（Milvus 子块 + PG 父块/文档行），保证「先删再加」幂等。
+- Milvus 子块必须带 `parent_id`，查询侧必须按 `parent_id` 回查 PostgreSQL 父块再拼提示词。
+- Milvus 集合 schema / 维度 / 度量创建后不可改；需要改时用 `init_milvus --recreate` 后重新入库，不要临时改集合配置。
+- 检索过滤必须下推：管理端 `scope=admin + city`，用户内容 `scope=user + owner_id`。
+- Cross-Encoder 精排失败要回退 RRF，不要让检索整体失败。
+- 知识库检索只走 Milvus；Milvus 故障时返回空上下文，不要重新引入其他向量库后端。
 - 保持防幻觉契约：LLM 只输出框架与名称，详情由系统按名称确定性回填。
 - 保持 Vite 代理使用 `127.0.0.1` 而非 `localhost`，否则 Node 可能解析到 IPv6 `::1` 导致连不上后端。
 - 前端超时保持 10 分钟（axios/fetch 与 Vite 代理），Agent 单次运行可能长达约 5 分钟。
@@ -209,19 +224,25 @@ data: {"type":"error","message":"..."}
 - 不要假设存在自动化测试或 lint 脚本（无 `pytest` / `npm test`）。
 - 不要为统一品牌而批量重命名 `sketchbook` / `sb-*`。
 - 不要用 Pinia 替换 `src/store.ts` 的轻量 store。
-- 不要在后端运行期间用另一进程重新入库 Chroma（会缺结果或抛 `InternalError: Error finding id`）。
 - 不要把 Vite 代理改成 `localhost`。
-- 不要修改集合创建后的 Chroma 配置（维度/距离度量不可改，需删除 `data/chroma_db` 重新入库）。
-- 不要提交或顺手重新入库 `backend/app/data/chroma_db/` 的二进制文件：该目录受版本管理，重新入库会弄脏 `data_level0.bin`、`length.bin`、`chroma.sqlite3`。
+- 不要修改 Milvus 集合创建后的 schema（字段 / 维度 / 度量不可改，需 `init_milvus --recreate` 后重新入库）。
+- 不要把父块写进 Milvus，也不要把子块正文只存 Milvus 而不留 `parent_id`。
+- 不要用 `upsert` 代替「先删再加」；Milvus 删除必须按 `doc_id + owner_id + scope` 精确定位。
+- 不要在 Cross-Encoder 失败时吞掉检索结果；必须回退 RRF 融合。
+- 不要重新引入 Chroma 或其他第二套向量库（已按用户要求彻底移除）。
 - 不要在 `/api/v1` 之外新增旧 `/api` 别名；前端 `services/api.ts` 已统一使用 `/api/v1`。
 
 ## 仓库特定注意事项
 
-- `.env`、`frontend/.env`、`node_modules`、`.venv`、`dist/` 已 gitignore；但 `backend/app/data/chroma_db/` 是提交进仓库的。
+- `.env`、`frontend/.env`、`node_modules`、`.venv`、`dist/` 已 gitignore；知识库向量数据只存在 Milvus 容器中，不随仓库提交。
 - 前端内部 `sketchbook` / `sb-*` 命名刻意保留，不要为统一品牌而批量改名。
 - README 中关于 Pinia 的表述已过时，以 `src/store.ts` 的实际实现为准。
 - 本机后端解释器是 conda `langchain` 环境（`D:\Development-Tools\anaconda3\envs\langchain\python.exe`）；仓库根目录 `.venv` 不可用。
 - 12306 MCP 首次调用会下载 npm 包，可能耗时数十秒；`MCP_INIT_TIMEOUT` 默认 60s，可按需调大。
+- Milvus 用 Windows Docker Desktop 的 `milvus-standalone` 单容器（`milvusdb/milvus:v3.0.6`，embedded etcd + 本地存储）。启动/停止容器前先确认用户是否允许；容器未启动时后端仍可启动，知识库检索降级为空上下文。
+- `pymilvus` 需与 Milvus 大版本匹配（当前 `pymilvus 3.0.x` + Milvus 3.0.x）；升级镜像时同步升级客户端并 `init_milvus --recreate`。
+- DashScope `gte-rerank` 可能因账户欠费/限流返回 `Access denied`；代码会回退 RRF 并熔断 5 分钟，不要把它当成检索故障。
+- MinerU 使用 `mineru-open-sdk` 云端 Precision API（import 名仍是 `mineru`），必须配置 `MINERU_TOKEN`；不要同时安装本地 `mineru` 包，二者会争用同一个 `mineru` 命名空间。Precision 限制约 200MB / 200 页，文件会上传 mineru.net。
 
 ## More Rules
 
@@ -238,6 +259,11 @@ data: {"type":"error","message":"..."}
 - 防幻觉回填：`backend/app/agent/nodes/plan.py`、`attraction.py`、`hotel.py`
 - 评估规则：`backend/app/agent/nodes/evaluation.py`
 - 会话 / 对话：`backend/app/modules/sessions/`、`backend/app/modules/chat/`
-- 知识库与 RAG 入库：`backend/app/modules/knowledge/`、`backend/app/integrations/chroma.py`
+- 知识库与 RAG 入库：`backend/app/modules/knowledge/`、`backend/app/integrations/milvus.py`
+- 父子块切分：`backend/app/modules/knowledge/chunking.py`
+- 混合检索与父块回填：`backend/app/modules/knowledge/retrieval.py`
+- Markdown 排版优化：`backend/app/modules/knowledge/markdown.py`
+- MinerU / VLM / PDF 抽取：`backend/app/modules/knowledge/extractors.py`
+- Milvus 初始化 CLI：`backend/app/scripts/init_milvus.py`
 - MCP：`backend/app/integrations/mcp.py`
 - 响应/事件模型：`backend/app/modules/trip/schemas.py`、`frontend/src/types/index.ts`、`frontend/src/services/api.ts`

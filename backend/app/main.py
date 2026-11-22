@@ -8,6 +8,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
@@ -18,6 +19,7 @@ from backend.app.core.database import close_database, init_database
 from backend.app.core.exception_handlers import register_exception_handlers
 from backend.app.core.logging import get_logger, setup_logging
 from backend.app.integrations.mcp import close_mcp, init_mcp_async
+from backend.app.integrations.milvus import close_milvus, init_milvus, milvus_error
 from backend.app.modules.chat.router import router as chat_router
 from backend.app.modules.health.router import router as health_router
 from backend.app.modules.knowledge.router import router as knowledge_router
@@ -43,7 +45,25 @@ async def lifespan(_: FastAPI):
     await init_database()
     logger.info("PostgreSQL 与 LangGraph checkpointer 初始化完成")
 
-    # 3) MCP：高德 / 时间 / 12306（单服务失败不影响启动）
+    # 3) Milvus：知识库集合/索引（失败不阻断启动，RAG 降级为无上下文）
+    logger.info("正在初始化 Milvus 知识库 ...")
+    try:
+        ready = await asyncio.to_thread(init_milvus)
+        if ready:
+            logger.info(
+                "Milvus 初始化完成",
+                uri=settings.milvus.uri,
+                collection=settings.milvus.collection,
+            )
+        else:
+            logger.warning(
+                "Milvus 未就绪，知识库检索将不可用",
+                error=milvus_error(),
+            )
+    except Exception as exc:
+        logger.warning("Milvus 初始化异常，知识库检索将不可用", error=str(exc))
+
+    # 4) MCP：高德 / 时间 / 12306（单服务失败不影响启动）
     logger.info("正在初始化 MCP 服务 ...")
     await init_mcp_async()
     logger.info("MCP 服务初始化完成")
@@ -52,6 +72,7 @@ async def lifespan(_: FastAPI):
         yield
     finally:
         await close_mcp()
+        close_milvus()
         await close_database()
         logger.info("应用已关闭")
 

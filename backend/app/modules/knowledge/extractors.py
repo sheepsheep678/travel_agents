@@ -1,12 +1,12 @@
 """知识库文件内容抽取：MD/TXT/PDF/图片。
 
-图片优先走 DashScope Qwen-VL，把截图忠实转写成 Markdown；未配置模型时明确报错，
-不引入 Tesseract/PaddleOCR 这类重依赖。
+- PDF：优先 MinerU 云端 Precision API（``mineru-open-sdk`` 的 ``MinerU`` 客户端），
+  默认 ``extract(..., ocr=True)`` 开启 OCR；Token 缺失/解析失败时回退 pypdf。
+- 图片：优先 DashScope Qwen-VL 转写；VLM 不可用时可选 MinerU OCR 兜底。
 """
 
 import io
 import logging
-import os
 import tempfile
 from pathlib import Path
 
@@ -63,7 +63,116 @@ def _decode_text(data: bytes) -> str:
     raise KnowledgeValidationError("文本编码无法识别，请使用 UTF-8 或 GB18030")
 
 
-def _extract_pdf(data: bytes) -> str:
+def _check_pdf_pages(data: bytes) -> None:
+    """用 pypdf 先做页数上限校验，避免 MinerU 解析超大 PDF。"""
+    try:
+        from pypdf import PdfReader
+    except Exception:
+        return
+    try:
+        reader = PdfReader(io.BytesIO(data))
+        page_count = len(reader.pages)
+    except Exception:
+        return
+    if page_count > settings.knowledge.max_pdf_pages:
+        raise KnowledgeValidationError(
+            f"PDF 页数超过 {settings.knowledge.max_pdf_pages} 页"
+        )
+
+
+def _extract_with_mineru(
+    data: bytes, filename: str = "", suffix: str = ".pdf"
+) -> str:
+    """调用 MinerU 云端 Precision API 解析文件并返回 Markdown。
+
+    使用 ``mineru-open-sdk`` 的类式接口::
+
+        client = MinerU(token)
+        result = client.extract(path, ocr=True, ...)
+        markdown = result.markdown
+
+    注意：文件会上传到 mineru.net；Token 从 ``MINERU_TOKEN`` 读取。
+    未配置 Token、SDK 未安装或解析失败时返回空串，由调用方回退。
+    """
+    if not settings.knowledge.mineru_enabled:
+        return ""
+
+    token = (settings.knowledge.mineru_token or "").strip()
+    if not token:
+        logger.warning(
+            "MINERU_TOKEN 未配置，跳过 MinerU 云端解析并回退 pypdf；"
+            "请到 https://mineru.net/apiManage/token 获取 Token"
+        )
+        return ""
+
+    try:
+        from mineru import MinerU
+    except Exception as exc:
+        logger.warning(
+            "mineru-open-sdk 不可用（请安装 mineru-open-sdk，"
+            "不要同时安装本地 mineru 包）: %s",
+            exc,
+        )
+        return ""
+
+    stem = Path(filename or "document").stem or "document"
+    suffix = suffix if suffix.startswith(".") else f".{suffix}"
+
+    try:
+        with tempfile.TemporaryDirectory(prefix="mineru_") as work_dir:
+            input_path = Path(work_dir) / f"{stem}{suffix}"
+            input_path.write_bytes(data)
+
+            options: dict = {
+                "ocr": settings.knowledge.mineru_ocr,
+                "language": settings.knowledge.mineru_language,
+                "timeout": settings.knowledge.mineru_timeout,
+            }
+            if settings.knowledge.mineru_model.strip():
+                options["model"] = settings.knowledge.mineru_model.strip()
+            if settings.knowledge.mineru_pages.strip():
+                options["pages"] = settings.knowledge.mineru_pages.strip()
+
+            logger.info(
+                "调用 MinerU 云端 Precision API: model=%s ocr=%s language=%s",
+                options.get("model", "auto"),
+                options["ocr"],
+                options["language"],
+            )
+            with MinerU(token) as client:
+                result = client.extract(str(input_path), **options)
+
+            state = getattr(result, "state", "")
+            if state != "done":
+                logger.warning(
+                    "MinerU 云端任务未完成: state=%s error=%s",
+                    state,
+                    getattr(result, "error", None),
+                )
+                return ""
+            markdown = (result.markdown or "").strip()
+
+        if not markdown:
+            logger.warning("MinerU 云端返回空 Markdown")
+            return ""
+        logger.info("MinerU 云端解析完成，Markdown 长度 %d", len(markdown))
+        return markdown
+    except Exception as exc:
+        logger.warning("MinerU 云端解析失败，回退其他方式: %s", exc)
+        return ""
+
+
+def _extract_pdf(data: bytes, filename: str = "") -> tuple[str, str]:
+    """返回 (文本, 解析方式)；优先 MinerU SDK，失败回退 pypdf。"""
+    _check_pdf_pages(data)
+
+    if settings.knowledge.mineru_enabled:
+        mineru_text = _extract_with_mineru(data, filename, ".pdf")
+        if mineru_text and len(mineru_text) >= 20:
+            return mineru_text, "mineru"
+        if not settings.knowledge.mineru_fallback:
+            raise KnowledgeValidationError("MinerU 解析失败，且未启用回退")
+
     # 延迟导入：pypdf 是可选依赖，未安装时 API 仍应正常启动。
     try:
         from pypdf import PdfReader
@@ -99,7 +208,7 @@ def _extract_pdf(data: bytes) -> str:
         raise KnowledgeValidationError(
             "PDF 没有可用文本层（可能是扫描件），请上传文字版或截图"
         )
-    return full_text
+    return full_text, "pdf"
 
 
 def _image_mime(data: bytes) -> str:
@@ -192,11 +301,24 @@ def _extract_image(data: bytes) -> str:
 
 
 def extract_content(data: bytes, source_type: str, filename: str = "") -> tuple[str, str]:
-    """返回 (文本, 抽取方式)。抽取方式用于 metadata: text/pdf/vlm。"""
+    """返回 (文本, 抽取方式)。抽取方式用于 metadata: text/mineru/pdf/vlm。"""
     if source_type in ("md", "txt"):
         return _decode_text(data), "text"
     if source_type == "pdf":
-        return _extract_pdf(data), "pdf"
+        return _extract_pdf(data, filename)
     if source_type == "image":
-        return _extract_image(data), "vlm"
+        try:
+            return _extract_image(data), "vlm"
+        except KnowledgeValidationError:
+            # VLM 未配置时，若 MinerU 可用则尝试 OCR 兜底
+            if settings.knowledge.mineru_enabled:
+                suffix = Path(filename or "").suffix or {
+                    "image/png": ".png",
+                    "image/jpeg": ".jpg",
+                    "image/webp": ".webp",
+                }.get(_image_mime(data), ".png")
+                mineru_text = _extract_with_mineru(data, filename or "image", suffix)
+                if mineru_text:
+                    return mineru_text, "mineru"
+            raise
     raise KnowledgeValidationError(f"未知的文件类型: {source_type}")

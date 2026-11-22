@@ -165,16 +165,61 @@ class Settings:
     class Rag(_SettingsGroup):
         use_hyde: bool = Field(default=True, validation_alias="RAG_USE_HYDE")
         name_fuzzy_match: bool = Field(default=True, validation_alias="RAG_NAME_FUZZY_MATCH")
-        chroma_dir: str = Field(
-            default=str(_DATA_DIR / "chroma_db"), validation_alias="CHROMA_DIR"
-        )
-        collection: str = Field(default="knowledge_base", validation_alias="COLLECTION")
-        chroma_distance: str = Field(default="cosine", validation_alias="CHROMA_DISTANCE")
-        md5_path: str = Field(
-            default=str(_DATA_DIR / "md5.text"), validation_alias="MD5_PATH"
+        # Milvus 入库账本：文件内容 MD5 去重
+        md5_milvus_path: str = Field(
+            default=str(_DATA_DIR / "md5_milvus.text"),
+            validation_alias="MD5_MILVUS_PATH",
         )
         corpus_dir: str = Field(
             default=str(_DATA_DIR / "corpus"), validation_alias="CORPUS_DIR"
+        )
+
+    class Milvus(_SettingsGroup):
+        """Milvus 向量库与混合检索配置。
+
+        集合 schema 创建后不可变：修改字段/维度/度量需显式删除集合后重建
+        （``python -m backend.app.scripts.init_milvus --recreate``）。
+        """
+
+        uri: str = Field(
+            default="http://127.0.0.1:19530", validation_alias="MILVUS_URI"
+        )
+        token: str = Field(default="", validation_alias="MILVUS_TOKEN")
+        db_name: str = Field(default="default", validation_alias="MILVUS_DB_NAME")
+        collection: str = Field(
+            default="knowledge_chunks", validation_alias="MILVUS_COLLECTION"
+        )
+        dense_dim: int = Field(default=1024, validation_alias="MILVUS_DENSE_DIM")
+        dense_metric: str = Field(
+            default="COSINE", validation_alias="MILVUS_DENSE_METRIC"
+        )
+        sparse_metric: str = Field(
+            default="BM25", validation_alias="MILVUS_SPARSE_METRIC"
+        )
+        analyzer_tokenizer: str = Field(
+            default="jieba", validation_alias="MILVUS_ANALYZER_TOKENIZER"
+        )
+        # 多路召回条数 + 精排后保留条数
+        dense_candidates: int = Field(
+            default=20, validation_alias="MILVUS_DENSE_CANDIDATES"
+        )
+        sparse_candidates: int = Field(
+            default=20, validation_alias="MILVUS_SPARSE_CANDIDATES"
+        )
+        final_top_k: int = Field(default=6, validation_alias="MILVUS_FINAL_TOP_K")
+        # Cross-Encoder 精排（DashScope gte-rerank，失败时回退 RRF 融合）
+        rerank_enabled: bool = Field(
+            default=True, validation_alias="MILVUS_RERANK_ENABLED"
+        )
+        rerank_model: str = Field(
+            default="gte-rerank-v2", validation_alias="MILVUS_RERANK_MODEL"
+        )
+        rerank_top_n: int = Field(default=6, validation_alias="MILVUS_RERANK_TOP_N")
+        rerank_max_candidates: int = Field(
+            default=40, validation_alias="MILVUS_RERANK_MAX_CANDIDATES"
+        )
+        connect_timeout: float = Field(
+            default=5.0, validation_alias="MILVUS_CONNECT_TIMEOUT"
         )
 
     class Planner(_SettingsGroup):
@@ -192,8 +237,45 @@ class Settings:
         max_pdf_pages: int = Field(default=50, validation_alias="KNOWLEDGE_MAX_PDF_PAGES")
         admin_token: str = Field(default="", validation_alias="KNOWLEDGE_ADMIN_TOKEN")
         vlm_model: str = Field(default="", validation_alias="KNOWLEDGE_VLM_MODEL")
-        chunk_size: int = Field(default=500, validation_alias="KNOWLEDGE_CHUNK_SIZE")
-        chunk_overlap: int = Field(default=50, validation_alias="KNOWLEDGE_CHUNK_OVERLAP")
+        # 父子块切分：父块入 PostgreSQL，子块入 Milvus
+        parent_chunk_size: int = Field(
+            default=2500, validation_alias="KNOWLEDGE_PARENT_CHUNK_SIZE"
+        )
+        parent_chunk_overlap: int = Field(
+            default=100, validation_alias="KNOWLEDGE_PARENT_CHUNK_OVERLAP"
+        )
+        child_chunk_size: int = Field(
+            default=400, validation_alias="KNOWLEDGE_CHILD_CHUNK_SIZE"
+        )
+        child_chunk_overlap: int = Field(
+            default=50, validation_alias="KNOWLEDGE_CHILD_CHUNK_OVERLAP"
+        )
+        # 大模型 Markdown 排版优化（只整理格式，不增删事实）
+        markdown_normalize: bool = Field(
+            default=True, validation_alias="KNOWLEDGE_MARKDOWN_NORMALIZE"
+        )
+        markdown_normalize_max_chars: int = Field(
+            default=12000, validation_alias="KNOWLEDGE_MARKDOWN_MAX_CHARS"
+        )
+        # MinerU 云端 Precision API（mineru-open-sdk，文件会上传到 mineru.net）
+        mineru_enabled: bool = Field(
+            default=False, validation_alias="MINERU_ENABLED"
+        )
+        # mineru.net 的 API Token（https://mineru.net/apiManage/token）
+        mineru_token: str = Field(default="", validation_alias="MINERU_TOKEN")
+        # 是否开启 OCR；对应 client.extract(..., ocr=True)
+        mineru_ocr: bool = Field(default=True, validation_alias="MINERU_OCR")
+        # 云端解析模型：vlm / pipeline / html（留空由 SDK 按文件类型推断）
+        mineru_model: str = Field(default="vlm", validation_alias="MINERU_MODEL")
+        # 文档语言，例如 ch / en
+        mineru_language: str = Field(default="ch", validation_alias="MINERU_LANGUAGE")
+        # 可选页码范围，例如 1-20；留空解析全部页
+        mineru_pages: str = Field(default="", validation_alias="MINERU_PAGES")
+        # 云端任务轮询超时（秒）
+        mineru_timeout: int = Field(default=300, validation_alias="MINERU_TIMEOUT")
+        mineru_fallback: bool = Field(
+            default=True, validation_alias="MINERU_FALLBACK"
+        )
 
     class Logging(_SettingsGroup):
         level: str = Field(default="INFO", validation_alias="LOG_LEVEL")
@@ -209,6 +291,10 @@ class Settings:
         )
         max_tool_result_chars: int = Field(
             default=6000, validation_alias="CHAT_MAX_TOOL_RESULT_CHARS"
+        )
+        # 对话 Agent 是否挂载知识库混合检索工具
+        rag_tool_enabled: bool = Field(
+            default=True, validation_alias="CHAT_RAG_TOOL_ENABLED"
         )
 
     class Mcp(_SettingsGroup):
@@ -229,6 +315,7 @@ class Settings:
         self.amap = self.Amap()
         self.llm = self.LLM()
         self.rag = self.Rag()
+        self.milvus = self.Milvus()
         self.planner = self.Planner()
         self.knowledge = self.Knowledge()
         self.chat = self.Chat()
@@ -278,6 +365,10 @@ def print_config() -> None:
     print(f"LLM API Key: {'已配置' if settings.llm.api_key else '未配置'}")
     print(f"LLM Base URL: {settings.llm.base_url}")
     print(f"LLM Model: {settings.llm.model_id}")
+    print(
+        f"RAG 向量库: Milvus "
+        f"{settings.milvus.uri}/{settings.milvus.collection}"
+    )
     print(f"日志级别: {settings.logging.level}")
 
 

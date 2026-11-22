@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from typing import Any, Dict
 
 from fastapi import APIRouter
@@ -10,6 +11,7 @@ from pydantic import BaseModel, Field
 from backend.app.core.config import settings
 from backend.app.core.database import check_database, is_checkpointer_ready
 from backend.app.integrations.mcp import get_mcp_status
+from backend.app.integrations.milvus import check_milvus, milvus_error
 
 router = APIRouter(prefix="/health", tags=["system"])
 
@@ -20,6 +22,7 @@ class HealthResponse(BaseModel):
     version: str
     database: bool
     checkpointer: bool
+    milvus: bool = False
     mcp: Dict[str, bool] = Field(default_factory=dict)
     errors: Dict[str, str] = Field(default_factory=dict)
 
@@ -28,12 +31,17 @@ class HealthResponse(BaseModel):
 async def health() -> HealthResponse:
     mcp_status: Dict[str, Any] = get_mcp_status()
     database_ok = await check_database()
+    milvus_ok = await asyncio.to_thread(check_milvus)
+    errors = dict(mcp_status.get("errors", {}))
+    if not milvus_ok and milvus_error():
+        errors["milvus"] = milvus_error()
     return HealthResponse(
         status="ok" if database_ok else "degraded",
         app_name=settings.app.name,
         version=settings.app.version,
         database=database_ok,
         checkpointer=is_checkpointer_ready(),
+        milvus=milvus_ok,
         mcp=mcp_status.get("ready", {}),
-        errors=mcp_status.get("errors", {}),
+        errors=errors,
     )
