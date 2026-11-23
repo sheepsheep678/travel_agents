@@ -11,7 +11,8 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass
-from typing import List, Optional, Sequence, Tuple
+from html.parser import HTMLParser
+from typing import Dict, List, Optional, Sequence, Tuple
 
 from langchain_text_splitters import (
     MarkdownHeaderTextSplitter,
@@ -98,6 +99,159 @@ def _section_title(metadata: dict) -> str:
 def _is_heading_only(text: str) -> bool:
     lines = [line.strip() for line in (text or "").splitlines() if line.strip()]
     return bool(lines) and all(line.startswith("#") for line in lines)
+
+
+# ---------------------------------------------------------------------------
+# HTML 表格归一化
+# ---------------------------------------------------------------------------
+
+# MinerU 等解析器常把表格输出成内联 HTML（<table><tr><td>…），
+# 而下面的表格识别只认 Markdown 管道表格。这里先确定性转成管道表格，
+# 保证表格能被逐行切分并重复表头；转换失败时保留原文。
+_TABLE_RE = re.compile(r"<table\b[^>]*>(.*?)</table\s*>", re.IGNORECASE | re.DOTALL)
+_MAX_SPAN = 50
+_MAX_TABLE_COLS = 60
+
+
+def _span_value(raw: Optional[str]) -> int:
+    try:
+        value = int(str(raw or "").strip())
+    except (TypeError, ValueError):
+        return 1
+    return max(1, min(_MAX_SPAN, value))
+
+
+class _TableHTMLParser(HTMLParser):
+    """把单个 <table> 的内部 HTML 解析成「行 → 单元格」结构。"""
+
+    def __init__(self) -> None:
+        super().__init__(convert_charrefs=True)
+        self.rows: List[List[Tuple[str, int, int, bool]]] = []
+        self._row: Optional[List[List]] = None
+        self._cell: Optional[dict] = None
+
+    def handle_starttag(self, tag: str, attrs) -> None:
+        tag = tag.lower()
+        if tag == "tr":
+            self._close_row()
+            self._row = []
+        elif tag in ("td", "th"):
+            self._close_cell()
+            if self._row is None:
+                self._row = []
+            attr_map = {key.lower(): value for key, value in attrs}
+            self._cell = {
+                "text": [],
+                "rowspan": _span_value(attr_map.get("rowspan")),
+                "colspan": _span_value(attr_map.get("colspan")),
+                "header": tag == "th",
+            }
+        elif tag in ("br", "hr") and self._cell is not None:
+            self._cell["text"].append(" ")
+        elif tag == "img" and self._cell is not None:
+            alt = {key.lower(): value for key, value in attrs}.get("alt")
+            if alt:
+                self._cell["text"].append(f" {alt} ")
+
+    def handle_startendtag(self, tag: str, attrs) -> None:
+        self.handle_starttag(tag, attrs)
+
+    def handle_data(self, data: str) -> None:
+        if self._cell is not None:
+            self._cell["text"].append(data)
+
+    def handle_endtag(self, tag: str) -> None:
+        tag = tag.lower()
+        if tag in ("td", "th"):
+            self._close_cell()
+        elif tag == "tr":
+            self._close_row()
+
+    def _close_cell(self) -> None:
+        if self._cell is None:
+            return
+        if self._row is None:
+            self._row = []
+        text = re.sub(r"\s+", " ", "".join(self._cell["text"])).strip()
+        self._row.append(
+            (
+                text,
+                self._cell["rowspan"],
+                self._cell["colspan"],
+                self._cell["header"],
+            )
+        )
+        self._cell = None
+
+    def _close_row(self) -> None:
+        self._close_cell()
+        if self._row:
+            self.rows.append(self._row)
+        self._row = None
+
+
+def _render_html_table(
+    rows: Sequence[Sequence[Tuple[str, int, int, bool]]]
+) -> str:
+    """把单元格矩阵渲染成管道表格；rowspan/colspan 用重复文本补齐。
+
+    Markdown 管道表格必须有表头行：首行含 ``<th>`` 时用它做表头，
+    否则合成 ``列1 / 列2 …`` 表头，避免把第一行数据误当表头丢掉语义。
+    """
+    if not rows:
+        return ""
+
+    grid: Dict[Tuple[int, int], str] = {}
+    for row_index, row in enumerate(rows):
+        col = 0
+        for text, rowspan, colspan, _header in row:
+            while (row_index, col) in grid:
+                col += 1
+            # Markdown 管道表格不支持跨行/跨列：重复文本让每一行都能独立检索
+            for delta_row in range(rowspan):
+                for delta_col in range(colspan):
+                    grid[(row_index + delta_row, col + delta_col)] = text
+            col += colspan
+
+    row_count = max(index[0] for index in grid) + 1
+    col_count = min(_MAX_TABLE_COLS, max(index[1] for index in grid) + 1)
+    has_header = any(cell[3] for cell in rows[0])
+    body_start = 1 if has_header else 0
+
+    def render_cell(value: str) -> str:
+        return value.replace("|", r"\|").strip() or " "
+
+    def render_row(row_index: int) -> str:
+        cells = [
+            render_cell(grid.get((row_index, col), "")) for col in range(col_count)
+        ]
+        return "| " + " | ".join(cells) + " |"
+
+    if has_header:
+        header = render_row(0)
+    else:
+        header = "| " + " | ".join(f"列{col + 1}" for col in range(col_count)) + " |"
+    separator = "| " + " | ".join("---" for _ in range(col_count)) + " |"
+    body = [render_row(index) for index in range(body_start, row_count)]
+    return "\n".join([header, separator, *body])
+
+
+def html_tables_to_markdown(text: str) -> str:
+    """把文本里的 HTML 表格转换成 Markdown 管道表格，其余内容原样保留。"""
+    if not text or "<table" not in text.lower():
+        return text
+
+    def replace(match: "re.Match[str]") -> str:
+        parser = _TableHTMLParser()
+        try:
+            parser.feed(match.group(1))
+            parser.close()
+            rendered = _render_html_table(parser.rows)
+        except Exception:
+            return match.group(0)
+        return f"\n\n{rendered}\n\n" if rendered else match.group(0)
+
+    return _TABLE_RE.sub(replace, text)
 
 
 # ---------------------------------------------------------------------------
@@ -295,7 +449,8 @@ def chunk_parent_child(
     child_overlap: Optional[int] = None,
 ) -> Tuple[List[ParentChunk], List[ChildChunk]]:
     """返回 (父块列表, 子块列表)；index 在整个文档内连续编号。"""
-    text = (text or "").strip()
+    # HTML 表格先归一成管道表格，否则会被当成普通段落整体塞进一个子块
+    text = html_tables_to_markdown(text or "").strip()
     if not text:
         return [], []
 

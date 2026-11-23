@@ -1,4 +1,4 @@
-"""AI 对话业务：会话校验、checkpointer 快照、LangChain Agent 与 SSE token 流。
+"""AI 对话业务：会话校验、checkpointer 快照、对话工作流与 SSE token 流。
 
 消息不再写 ``chat_messages`` 表：
 - 会话元数据（哪些会话）在 PostgreSQL 的 ``chat_sessions``；
@@ -12,12 +12,7 @@ import asyncio
 import json
 from typing import Any, AsyncIterator
 
-from langchain_core.messages import (
-    AIMessage,
-    AIMessageChunk,
-    HumanMessage,
-    RemoveMessage,
-)
+from langchain_core.messages import HumanMessage, RemoveMessage
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.app.core.config import settings
@@ -36,23 +31,6 @@ from backend.app.modules.sessions.repository import SessionRepository
 from backend.app.modules.sessions.service import validate_id
 
 logger = get_logger(__name__)
-
-
-def _chunk_text(chunk: Any) -> str:
-    content = getattr(chunk, "content", "")
-    if isinstance(content, str):
-        return content
-    if isinstance(content, list):
-        parts: list[str] = []
-        for block in content:
-            if isinstance(block, str):
-                parts.append(block)
-            elif isinstance(block, dict):
-                text = block.get("text") or block.get("content")
-                if isinstance(text, str):
-                    parts.append(text)
-        return "".join(parts)
-    return ""
 
 
 def _sse(payload: dict) -> dict:
@@ -92,7 +70,12 @@ class ChatService:
                 raise BadRequestError("消息不能为空")
             # 先落 checkpointer：即使客户端随后断开，用户消息也不会丢
             await agent.aupdate_state(
-                config, {"messages": [HumanMessage(content=content)]}
+                config,
+                {
+                    "messages": [HumanMessage(content=content)],
+                    "city": request.city or session.city or "",
+                    "user_id": request.user_id,
+                },
             )
             title = content.replace("\n", " ")[:18] if not session.title else None
             await self.sessions.update_session(
@@ -128,8 +111,9 @@ class ChatService:
             if getattr(message, "id", None)
         ]
         if remove:
+            # as_node 只决定更新归属，不影响下次从 START 重新执行
             await agent.aupdate_state(
-                config, {"messages": remove}, as_node="model"
+                config, {"messages": remove}, as_node="safety"
             )
 
     async def stream(
@@ -138,21 +122,20 @@ class ChatService:
         agent: Any,
         config: dict,
     ) -> AsyncIterator[dict]:
-        """运行 Agent，把文本 token 以 SSE 推给前端；快照由 checkpointer 自动保存。"""
+        """运行对话工作流，把节点写入的 token 以 SSE 推给前端。"""
         try:
             async with asyncio.timeout(settings.chat.response_timeout):
-                async for chunk, _metadata in agent.astream(
+                # 工作流节点通过 get_stream_writer() 只推送面向用户的文本，
+                # 意图识别 / 安全围栏等内部调用的 token 不会泄露给前端。
+                async for chunk in agent.astream(
                     {"messages": []},
                     config,
-                    stream_mode="messages",
+                    stream_mode="custom",
                 ):
-                    # 只转发模型文本；ToolMessage / tool_call 参数块没有文本内容
-                    if not isinstance(chunk, (AIMessage, AIMessageChunk)):
+                    if not isinstance(chunk, dict):
                         continue
-                    text = _chunk_text(chunk)
-                    if not text:
-                        continue
-                    yield _sse({"type": "token", "delta": text})
+                    if chunk.get("type") == "token" and chunk.get("delta"):
+                        yield _sse({"type": "token", "delta": chunk["delta"]})
 
             yield _sse({"type": "done", "session_id": session.id})
         except asyncio.CancelledError:

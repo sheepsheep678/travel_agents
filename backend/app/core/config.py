@@ -296,6 +296,14 @@ class Settings:
         rag_tool_enabled: bool = Field(
             default=True, validation_alias="CHAT_RAG_TOOL_ENABLED"
         )
+        # 闲聊子图最多走模型回复的轮次，超出后改用固定模板
+        chitchat_max_rounds: int = Field(
+            default=3, validation_alias="CHAT_CHITCHAT_MAX_ROUNDS"
+        )
+        # 安全围栏是否启用大模型复核（关闭时只保留意图节点的危险判定）
+        safety_llm_enabled: bool = Field(
+            default=True, validation_alias="CHAT_SAFETY_LLM_ENABLED"
+        )
 
     class Mcp(_SettingsGroup):
         init_timeout: float = Field(default=60.0, validation_alias="MCP_INIT_TIMEOUT")

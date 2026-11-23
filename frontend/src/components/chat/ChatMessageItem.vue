@@ -8,8 +8,8 @@
       <div v-if="message.role === 'user'" class="msg-bubble">{{ message.content }}</div>
 
       <template v-else>
-        <div class="msg-text">
-          {{ message.content }}<span v-if="message.status === 'streaming'" class="caret" aria-hidden="true"></span>
+        <div class="msg-text" :class="{ 'is-streaming': message.status === 'streaming' }">
+          <MarkdownBody :content="message.content" />
         </div>
         <p v-if="message.status === 'stopped'" class="msg-note">已停止生成</p>
         <p v-if="message.status === 'error'" class="msg-error">{{ message.error || '生成失败，请稍后重试' }}</p>
@@ -27,6 +27,7 @@
 <script setup lang="ts">
 import { onUnmounted, ref } from 'vue'
 import SealMark from '../site/SealMark.vue'
+import MarkdownBody from './MarkdownBody.vue'
 import type { ChatMessage } from '../../types'
 
 const props = defineProps<{
@@ -108,10 +109,12 @@ function legacyCopy(text: string) {
   font-size: 14.5px;
   line-height: 1.95;
   color: var(--ink);
-  white-space: pre-wrap;
   word-break: break-word;
 }
-.caret {
+/* 流式输出光标：贴在 Markdown 最后一个块级元素（或空正文）的行尾 */
+.msg-text.is-streaming :deep(.md-body > *:last-child)::after,
+.msg-text.is-streaming :deep(.md-body:empty)::after {
+  content: '';
   display: inline-block;
   width: 2px;
   height: 1.05em;

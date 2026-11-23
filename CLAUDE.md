@@ -26,9 +26,10 @@ backend/app/
   modules/
     health/               # GET /api/v1/health
     sessions/             # models / repository / schemas / service / router
-    chat/                 # agent / history(checkpointer) / SSE service
+    chat/                 # agent 工厂 / workflow（意图路由图）/ history / SSE service
     knowledge/            # 解析 / chunking / markdown / retrieval / PG 父块 + Milvus 子块 / ingest_cli
     trip/                 # 行程规划 models / repository / service / router / schemas
+  evaluation/             # chat_eval / retrieval_eval + datasets + results(运行时生成)
   scripts/                # init_db.py / init_milvus.py
   data/
     corpus/               # 11 座城市 txt 语料（文件名即 city）
@@ -49,6 +50,8 @@ backend/app/
 - 管理端语料入库（父子块 → PG + Milvus）：`python -m backend.app.modules.knowledge.ingest_cli`（`--force` 忽略账本，`--city 青岛` 只处理一城）
 - 不经 HTTP，直接跑整张图调试（内置青岛 3 天示例）：`python -m backend.app.agent.graph`
 - 验证 MCP 工具加载（高德 / 时间 / 12306）：`python -m backend.app.integrations.mcp`
+- 对话评测（80 条意图用例，规则 + 大模型评分）：`python -m backend.app.evaluation.chat_eval`（`--limit / --category / --concurrency / --no-judge`）
+- 向量检索评测（100 对 query/文档，独立集合）：`python -m backend.app.evaluation.retrieval_eval`（需 Milvus；默认首次入库、后续只评测；`--rebuild` 强制重灌；`--no-rerank / --limit`）
 - 需要热重载时：`uvicorn backend.app.main:app --reload --loop backend.app.core.runtime:proactor_loop_factory`（Windows 下必须显式指定，见“事件循环”一节）
 
 本仓库没有自动化测试和 lint 脚本，不要假设存在 `pytest` / `npm test` 命令。
@@ -133,7 +136,7 @@ LLM 只输出计划**框架与名称**（`agent/nodes/plan.py` 的 `PlannerOutpu
 - `time`（stdio：`python -m mcp_server_time`）：`get_current_time`、`convert_time`。
 - `rail`（stdio：`npx -y 12306-mcp`）：`get-current-date`、`get-station-code-of-citys`、`get-tickets`、`get-interline-tickets` 等 8 个工具。Windows 上经 `cmd.exe /c npx.cmd` 启动。
 
-行程图只使用 amap 工具；对话助手通过 `modules/chat/agent.py` 的 `create_agent` 绑定 time + rail 工具。工具缺失时行程节点返回 `parse_error` 而不抛异常。MCP 结果是文本块，统一用 `agent/nodes/utils._extract_text()` 解析；详情批量获取用 `fetch_details()`（信号量限流 + 重试）。
+行程图只使用 amap 工具；对话工作流的推荐/规划子 Agent 通过 `modules/chat/workflow/tools.py` 绑定全部 MCP 工具（amap + time + rail）和知识库工具。工具缺失时行程节点返回 `parse_error` 而不抛异常。MCP 结果是文本块，统一用 `agent/nodes/utils._extract_text()` 解析；详情批量获取用 `fetch_details()`（信号量限流 + 重试）。
 
 ### 对话 SSE
 
@@ -145,13 +148,26 @@ data: {"type":"done","session_id":"..."}
 data: {"type":"error","message":"..."}
 ```
 
-对话使用 LangChain `create_agent` + LangGraph checkpointer，`thread_id = chat_sessions.id`：
+对话是 `modules/chat/workflow/` 下的 LangGraph 工作流，`thread_id = chat_sessions.id`：
 
+```
+START → intent（正则寒暄 → 快模型结构化识别 → Command 路由）
+          ├─ chitchat（子图：业务意图守卫 → 闲聊回复，轮次上限 3）
+          ├─ recommend / plan（create_agent + 全部工具）
+          ├─ human（打印日志模拟转人工）
+          ├─ fallback（反问用户）
+          └─ dangerous → END（固定拒绝话术）
+        上述工作流 → safety（大模型复核）→ END
+```
+
+- 父状态：`messages` / `previous_workflow` / `activated_workflow` / `pending_reply` / `chitchat_count`；闲聊子图状态声明 `chitchat_count`，计数随父状态往返持久化。
+- 意图识别用快模型 `with_structured_output(IntentResult)`，输出 `intent` / `reason` / `risk_level`；`risk_level >= 3` 或 `dangerous` 直接结束。
 - `ChatService.prepare()` 校验 `user_id + session_id`，通过 `agent.aupdate_state()` 把用户消息写入 checkpointer；
-- `stream()` 用 `agent.astream({"messages": []}, config, stream_mode="messages")` 运行 Agent，只把模型节点的文本 token 推给前端；
+- `stream()` 用 `agent.astream({"messages": []}, config, stream_mode="custom")`，节点通过 `get_stream_writer()` 推送 `{"type":"token","delta":...}`；意图识别与安全围栏的内部调用不会泄漏到前端。
+- 子图（chitchat）的 custom 事件不会传回父图，因此闲聊回复先写入 `pending_reply`，由父图 `emit_reply` 节点统一推送。
 - 历史读取：`modules/chat/history.py` 用 `checkpointer.aget_tuple()` 取 `channel_values.messages`；
 - 删除会话：`SessionService.delete_session()` 先 `checkpointer.adelete_thread(session_id)`，再删 `chat_sessions` 行；
-- 重新生成：`agent.aget_state()` 找到最后一条助手消息，用 `RemoveMessage` 删除后重新流式生成。
+- 重新生成：`agent.aget_state()` 找到最后一条助手消息，用 `RemoveMessage` 删除后重新流式生成（`as_node="safety"`）。
 
 不要再新增 `chat_messages` 表或手动搬运消息；checkpointer 是消息快照的唯一事实来源。
 
@@ -162,10 +178,10 @@ data: {"type":"error","message":"..."}
 - **文档解析**：PDF 走 MinerU 云端 Precision API（`mineru-open-sdk` 的 `MinerU(token).extract(..., ocr=True)`，`MINERU_TOKEN` 必填），失败回退 pypdf；图片优先 Qwen-VL，失败时可用 MinerU OCR 兜底。文件会上传到 mineru.net。
 - **Milvus 子块集合**（`integrations/milvus.py`，默认 `knowledge_chunks`）：字段 `id` / 元数据（`doc_id` / `parent_id` / `scope` / `owner_id` / `city` / `title` / `section` / `block_type` 等）/ 原始文本 `content` / 检索文本 `text` / 稠密向量 `dense` / 稀疏向量 `sparse`。`text` 开启 jieba 分析器并绑定服务端 **BM25 Function**，写入时只需给 `text` + `dense`；稠密 / 稀疏 / id / 过滤字段分别建索引。
 - **父块表**：`knowledge_parent_chunks`（`modules/knowledge/models.py`），只存 PostgreSQL，不进入 Milvus。子块 metadata 的 `parent_id`（`{doc_id}:p{index}`）用于回查父块，父块正文加入提示词做增强。
-- **切分**：`modules/knowledge/chunking.py` 先按 H1/H2 分父块，父块内按 H3 子标题、表格、路线、段落切子块；子块文本前缀「文档标题 + 章节」，表格逐行保留表头，路线行保持完整。
+- **切分**：`modules/knowledge/chunking.py` 先按 H1/H2 分父块，父块内按 H3 子标题、表格、路线、段落切子块；子块文本前缀「文档标题 + 章节」，表格逐行保留表头，路线行保持完整。MinerU 输出的 HTML `<table>` 会在切分前确定性转成 Markdown 管道表格（有 `<th>` 用 `<th>` 做表头，否则合成 `列1/列2…`；`rowspan`/`colspan` 用重复文本补齐），否则整张表会被当成一个普通段落。
 - **写入**：`KnowledgeService.ingest()` 先删同 `doc_id` 的 Milvus 子块和 PG 父块/文档行，再加新数据（先删再加）。管理端语料 `doc_id = admin:{城市}`，用户文档使用随机 hex。
 - **混合检索**：稠密 top-N + BM25 top-N → RRF 融合 → DashScope `gte-rerank` Cross-Encoder 精排；精排失败自动回退 RRF 并熔断 5 分钟。Milvus 不可用时返回空结果，规划继续但无知识库上下文。
-- **对话工具**：`modules/chat/agent.py` 的 create_agent 挂载 `search_knowledge` 工具，按当前 `city + user_id` 绑定过滤条件；对话回答涉及攻略细节时优先调用。
+- **对话工具**：`modules/chat/workflow/tools.py` 为推荐/规划子 Agent 挂载 `search_knowledge` 工具，按当前 `city + user_id` 绑定过滤条件；对话回答涉及攻略细节时优先调用。
 
 **Milvus schema 创建后不可改**：修改字段、维度或度量必须 `init_milvus --recreate`（会清空集合）后重新入库。Milvus 写入后会 flush，入库后无需重启后端。
 
@@ -201,6 +217,8 @@ data: {"type":"error","message":"..."}
 - 节点只返回**部分状态字典**，不要返回整个 state。
 - 新增状态字段必须同时加到 `PlannerState` 和 `initial_state()`。
 - 新增图节点必须加入 `agent/constants.py` 的 `NODE_LABELS`，否则前端收不到该节点的 SSE 事件。
+- 对话工作流节点只能通过 `get_stream_writer()` 推送面向用户的 `{"type":"token"}`；`stream_mode` 固定为 `custom`。
+- 新增对话状态字段必须同步加到 `ChatState` 与 `initial_chat_state()`；闲聊子图新增字段同步加到 `ChitchatState`。
 - 新增业务接口放在 `modules/<module>/router.py`，挂载时统一加 `/api/v1` 前缀，并用 `Depends` 注入 service 与 DB session。
 - 业务错误抛 `AppError` 子类，不要在各层重复拼 `HTTPException` 响应。
 - 知识库入库必须走 `KnowledgeService`：父块写 `knowledge_parent_chunks`，子块写 Milvus；**父块不要写入 Milvus**。
@@ -259,6 +277,8 @@ data: {"type":"error","message":"..."}
 - 防幻觉回填：`backend/app/agent/nodes/plan.py`、`attraction.py`、`hotel.py`
 - 评估规则：`backend/app/agent/nodes/evaluation.py`
 - 会话 / 对话：`backend/app/modules/sessions/`、`backend/app/modules/chat/`
+- 对话工作流（意图路由 / 闲聊子图 / 安全围栏）：`backend/app/modules/chat/workflow/`
+- 对话与检索评测：`backend/app/evaluation/chat_eval.py`、`retrieval_eval.py`、`datasets/`
 - 知识库与 RAG 入库：`backend/app/modules/knowledge/`、`backend/app/integrations/milvus.py`
 - 父子块切分：`backend/app/modules/knowledge/chunking.py`
 - 混合检索与父块回填：`backend/app/modules/knowledge/retrieval.py`
