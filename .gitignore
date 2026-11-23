@@ -17,5 +17,6 @@ frontend/.env
 
 
 .pdf
+data
 # 评测结果（运行时生成）
 backend/app/evaluation/results/
