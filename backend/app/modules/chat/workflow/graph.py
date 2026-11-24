@@ -62,6 +62,8 @@ def build_chat_graph(
     plan_llm, plan_prompt = build_agent_llm("plan", city, main_llm, resolved_tools)
 
     graph = StateGraph(ChatState)
+    graph.add_node("memory_load", nodes.memory_load_node)
+    graph.add_node("memory_save", nodes.memory_save_node)
     graph.add_node("intent", partial(nodes.intent_node, intent_llm=intent_llm))
     graph.add_node("chitchat", _build_chitchat_graph(fast_llm))
     graph.add_node(
@@ -90,7 +92,8 @@ def build_chat_graph(
     graph.add_node("emit_reply", nodes.emit_reply_node)
     graph.add_node("safety", partial(nodes.safety_node, safety_llm=safety_llm))
 
-    graph.add_edge(START, "intent")
+    graph.add_edge(START, "memory_load")
+    graph.add_edge("memory_load", "intent")
     graph.add_edge("chitchat", "emit_reply")
     graph.add_edge("emit_reply", "safety")
     for name in ("recommend", "plan"):
@@ -106,6 +109,7 @@ def build_chat_graph(
     )
     for name in _SIMPLE_NODES:
         graph.add_edge(name, "safety")
-    graph.add_edge("safety", END)
+    graph.add_edge("safety", "memory_save")
+    graph.add_edge("memory_save", END)
 
     return graph.compile(checkpointer=saver) if saver else graph.compile()

@@ -58,6 +58,7 @@ async def init_database() -> None:
 
     # 导入所有 ORM 模型，确保 Base.metadata 在建表前完整
     from backend.app.modules.knowledge import models as _knowledge_models  # noqa: F401
+    from backend.app.modules.memory import models as _memory_models  # noqa: F401
     from backend.app.modules.sessions import models as _session_models  # noqa: F401
     from backend.app.modules.trip import models as _trip_models  # noqa: F401
 

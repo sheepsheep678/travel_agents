@@ -14,6 +14,7 @@ import json
 
 from backend.app.core.config import settings
 from backend.app.core.logging import get_logger, setup_logging
+from backend.app.integrations.memory_milvus import init_memory_milvus, memory_stats
 from backend.app.integrations.milvus import close_milvus, init_milvus, stats
 
 logger = get_logger(__name__)
@@ -33,6 +34,10 @@ def main() -> None:
     if not ready:
         raise SystemExit("Milvus 初始化失败，请确认容器已启动且 MILVUS_URI 正确")
 
+    memory_ready = init_memory_milvus(recreate=args.recreate)
+    if not memory_ready:
+        logger.warning("Milvus 记忆集合初始化失败，长期记忆将不可用")
+
     print(
         json.dumps(
             {
@@ -44,6 +49,7 @@ def main() -> None:
                 "sparse_metric": settings.milvus.sparse_metric,
                 "analyzer": settings.milvus.analyzer_tokenizer,
                 "stats": stats(),
+                "memory": memory_stats(),
             },
             ensure_ascii=False,
             indent=2,

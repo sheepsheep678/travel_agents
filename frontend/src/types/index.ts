@@ -225,3 +225,9 @@ export interface KnowledgeListResponse {
   success: boolean
   items: KnowledgeItem[]
 }
+
+export interface KnowledgeConfigResponse {
+  success: boolean
+  max_file_mb: number
+  max_text_chars: number
+}

@@ -37,11 +37,12 @@ class SafetyVerdict(BaseModel):
 
 
 class ChatState(TypedDict, total=False):
-    """父图状态：对话消息 + 路由上下文。"""
+    """父图状态：对话消息 + 路由上下文 + 记忆上下文。"""
 
     messages: Annotated[list[AnyMessage], add_messages]
     city: str
     user_id: str
+    session_id: str
     previous_workflow: str
     activated_workflow: str
     intent_reason: str
@@ -49,14 +50,24 @@ class ChatState(TypedDict, total=False):
     pending_reply: str
     chitchat_count: int
     tool_round: int
+    # 记忆系统：会话摘要 / 已确认事实 / 外置任务状态 / 长期记忆上下文
+    memory_summary: str
+    memory_facts: dict
+    memory_task_state: dict
+    memory_context: str
+    turn_count: int
 
 
 class ChitchatState(TypedDict, total=False):
-    """闲聊子图状态：共享消息 + 独立的闲聊轮次计数。"""
+    """闲聊子图状态：共享消息 + 独立的闲聊轮次计数 + 记忆上下文。"""
 
     messages: Annotated[list[AnyMessage], add_messages]
     chitchat_count: int
     pending_reply: str
+    memory_summary: str
+    memory_facts: dict
+    memory_task_state: dict
+    memory_context: str
 
 
 def initial_chat_state(city: str = "", user_id: str = "") -> ChatState:
@@ -65,6 +76,7 @@ def initial_chat_state(city: str = "", user_id: str = "") -> ChatState:
         "messages": [],
         "city": city,
         "user_id": user_id,
+        "session_id": "",
         "previous_workflow": "",
         "activated_workflow": "",
         "intent_reason": "",
@@ -72,6 +84,11 @@ def initial_chat_state(city: str = "", user_id: str = "") -> ChatState:
         "pending_reply": "",
         "chitchat_count": 0,
         "tool_round": 0,
+        "memory_summary": "",
+        "memory_facts": {},
+        "memory_task_state": {},
+        "memory_context": "",
+        "turn_count": 0,
     }
 
 

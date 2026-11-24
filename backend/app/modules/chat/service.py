@@ -62,6 +62,15 @@ class ChatService:
         if request.regenerate:
             # 重新生成要拿到新回复，绕过 Redis 里的对话回复缓存
             config["configurable"]["skip_cache"] = True
+            # 补齐记忆节点需要的归属字段（首轮重新生成时状态里可能还没有）
+            await agent.aupdate_state(
+                config,
+                {
+                    "session_id": session.id,
+                    "user_id": request.user_id,
+                    "city": request.city or session.city or "",
+                },
+            )
             await self._remove_last_answer(agent, config)
             await self.sessions.update_session(
                 session, city=(request.city or None)
@@ -77,6 +86,7 @@ class ChatService:
                     "messages": [HumanMessage(content=content)],
                     "city": request.city or session.city or "",
                     "user_id": request.user_id,
+                    "session_id": session.id,
                 },
             )
             title = content.replace("\n", " ")[:18] if not session.title else None

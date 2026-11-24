@@ -29,6 +29,7 @@ backend/app/
     sessions/             # models / repository / schemas / service / router
     chat/                 # agent 工厂 / workflow（意图路由图）/ history / SSE service
     knowledge/            # 解析 / chunking / markdown / retrieval / PG 父块 + Milvus 子块 / ingest_cli
+    memory/               # 分层记忆：会话摘要 / 事实 / 任务状态 + 跨会话长期记忆
     trip/                 # 行程规划 models / repository / service / router / schemas
   evaluation/             # chat_eval / retrieval_eval + datasets + results(运行时生成)
   scripts/                # init_db.py / init_milvus.py
@@ -43,9 +44,9 @@ backend/app/
 
 - 初始化 PostgreSQL（建库 + 建表 + checkpointer）：`python -m backend.app.scripts.init_db`
 - 启动 Milvus 容器（Windows Docker Desktop）：`docker start milvus-standalone`
-- 初始化 Milvus 数据库 / 集合 / BM25 函数 / 索引：`python -m backend.app.scripts.init_milvus`
+- 初始化 Milvus 数据库 / 知识库集合 / 记忆集合 / BM25 函数 / 索引：`python -m backend.app.scripts.init_milvus`
 - 启动 Redis 缓存容器（Windows Docker Desktop）：`docker start redis`
-- 重建 Milvus 集合（会清空向量）：`python -m backend.app.scripts.init_milvus --recreate`
+- 重建 Milvus 集合（会清空知识库与记忆向量）：`python -m backend.app.scripts.init_milvus --recreate`
 - 启动后端（默认 8000 端口）：`python -m backend.app.main`
 - 启动前端（5173 端口，需先 `npm install`）：`cd frontend && npm run dev`
 - 类型检查 + 生产构建：`cd frontend && npm run build`
@@ -68,10 +69,11 @@ backend/app/
 
 | 模块 | 路径 | 说明 |
 | --- | --- | --- |
-| health | `GET /api/v1/health` | 数据库、checkpointer、Redis、Milvus、各 MCP 服务状态 |
+| health | `GET /api/v1/health` | 数据库、checkpointer、Redis、Milvus（知识库/记忆集合）、各 MCP 服务状态 |
 | sessions | `/api/v1/sessions` | 创建 / ensure / 列表 / 详情 / 删除 |
 | chat | `POST /api/v1/chat/stream` | 对话 SSE（token / done / error） |
 | knowledge | `/api/v1/knowledge/*` | 用户上传 / 列表 / 删除；管理端上传 |
+| memory | `/api/v1/memory/*` | 会话情景记忆 / 用户长期记忆的查看与删除 |
 | trip | `/api/v1/trip/plan`、`/api/v1/trip/plan/stream` | 一次性 / SSE 行程规划 |
 
 路由只做参数与依赖注入，业务逻辑在对应模块的 `service.py`；数据库操作在 `repository.py`；`core/deps.py` 提供 `DbSession` 与各 service 的 `Depends`。业务错误抛 `core/exceptions.py` 的 `AppError` 子类，由 `core/exception_handlers.py` 统一转成 `{"success": false, "code": ..., "message": ...}`。
@@ -82,7 +84,7 @@ backend/app/
 
 ### 数据库与会话
 
-- 业务表：`users`、`chat_sessions`、`knowledge_documents`、`trip_plans`（每次规划一条，含 thread_id / 请求 / 结果 / 状态）。
+- 业务表：`users`、`chat_sessions`、`knowledge_documents`、`trip_plans`（每次规划一条，含 thread_id / 请求 / 结果 / 状态）、`session_memories`（每会话一条派生记忆，删除会话时级联删除）。
 - 对话消息不落业务表：`chat_sessions` 只记录“有哪些会话”（user_id + session_id + 标题/城市），消息内容快照由 LangGraph checkpointer 按 `thread_id = session_id` 保存。
 - LangGraph checkpoint 由 `AsyncPostgresSaver` 管理，表由 `setup()` 创建；不要把 checkpoint 表写进 `Base.metadata`。
 - `user_id` = 浏览器匿名 ID（前端 `localStorage` 的 `lvji_client_id`），知识库归属按 `user_id` 计算。
@@ -153,16 +155,16 @@ data: {"type":"error","message":"..."}
 对话是 `modules/chat/workflow/` 下的 LangGraph 工作流，`thread_id = chat_sessions.id`：
 
 ```
-START → intent（正则寒暄 → 快模型结构化识别 → Command 路由）
+START → memory_load（加载/压缩记忆）→ intent（正则寒暄 → 快模型结构化识别 → Command 路由）
           ├─ chitchat（子图：业务意图守卫 → 闲聊回复，轮次上限 3）
           ├─ recommend / plan（LLM.bind_tools → 工具节点 → 回到 LLM 循环）
           ├─ human（打印日志模拟转人工）
           ├─ fallback（反问用户）
           └─ dangerous → END（固定拒绝话术）
-        上述工作流 → safety（大模型复核）→ END
+        上述工作流 → safety（大模型复核）→ memory_save（异步写记忆）→ END
 ```
 
-- 父状态：`messages` / `previous_workflow` / `activated_workflow` / `pending_reply` / `chitchat_count` / `tool_round`；闲聊子图状态声明 `chitchat_count`，计数随父状态往返持久化。
+- 父状态：`messages` / `city` / `user_id` / `session_id` / `previous_workflow` / `activated_workflow` / `pending_reply` / `chitchat_count` / `tool_round` / `memory_summary` / `memory_facts` / `memory_task_state` / `memory_context` / `turn_count`；闲聊子图声明 `chitchat_count` 与记忆字段，计数随父状态往返持久化。
 - 推荐 / 规划不再使用 `create_agent`：`agent_llm_node` 流式调用 `llm.bind_tools(tools)`，`route_after_agent()` 有 `tool_calls` 时路由到 `agent_tools`，`agent_tools_node` 按工具名从 `tool_map`（缺失时回落 `get_mcp_tool`）执行并写回 `ToolMessage`，再按 `activated_workflow` 回到 `recommend` / `plan`；到达 `CHAT_MAX_TOOL_ROUNDS` 后改用未绑定工具的 `plain_llm` 强制作答，避免悬空工具调用。
 - `_sanitize_history()` 会在每次调用模型前剔除未配对的 `AIMessage(tool_calls)` 与孤立 `ToolMessage`，防止客户端中断留下悬空工具调用导致上游 400。
 - 意图识别用快模型 `with_structured_output(IntentResult)`，输出 `intent` / `reason` / `risk_level`；`risk_level >= 3` 或 `dangerous` 直接结束。
@@ -174,6 +176,21 @@ START → intent（正则寒暄 → 快模型结构化识别 → Command 路由�
 - 重新生成：`agent.aget_state()` 找到最后一条助手消息，用 `RemoveMessage` 删除后重新流式生成（`as_node="safety"`）。
 
 不要再新增 `chat_messages` 表或手动搬运消息；checkpointer 是消息快照的唯一事实来源。
+
+### 记忆系统（分层记忆）
+
+`modules/memory/` 实现四层记忆，消息原文仍以 checkpointer 为唯一事实来源，摘要只是派生材料：
+
+- **工作记忆**：最近 `MEMORY_WINDOW_ROUNDS` 轮（默认 5，按用户消息计数）完整原文；记忆关闭时回退到 `CHAT_MAX_HISTORY_MESSAGES`。
+- **情景记忆**：`session_memories` 表（`session_id` 主键，外键级联删除），保存滚动摘要、已确认/待确认事实、外置任务状态与轮次；窗口外历史达到 `MEMORY_SUMMARY_TRIGGER_MESSAGES` 后，用快模型增量压缩，摘要按 `old + "\n---\n" + new` 滚动拼接，超长时才调用模型合并。
+- **语义记忆**：用户偏好、事实、规则、历史任务结果，存 Milvus `user_memories` 集合（`MILVUS_MEMORY_COLLECTION`），稠密 + BM25 混合召回后按 RRF + 重要度排序。
+- **程序记忆**：工具使用经验、成功工作流、失败教训，同样存 `user_memories`，`kind=workflow/lesson`；工具失败与知识库空结果由 `memory_save` 确定性回写。
+
+写入时机：`memory_load`（轮首）负责加载与压缩；`memory_save`（轮末）只把任务挂到后台，异步完成四类触发——明确“记住…”指令、摘要确认事实升级、每 `MEMORY_EXTRACT_INTERVAL_ROUNDS` 轮批量抽取、知识检索失败回写“知识缺口”。所有记忆读写失败只记 warning，绝不阻断对话或推迟 `done` 事件。
+
+提示词只注入精简区块：会话摘要、已确认事实、待确认信息（明确标注“待确认”）、当前任务状态、长期记忆 top-k；检索只返回 `status=confirmed` 的长期记忆。
+
+管理接口：`GET /api/v1/memory`、`DELETE /api/v1/memory/{memory_id}`、`DELETE /api/v1/memory`、`GET /api/v1/memory/session/{session_id}`（均需 `user_id`，会话接口还会校验归属）。
 
 ### RAG（Milvus 父子块 + 混合检索）
 
@@ -187,7 +204,7 @@ START → intent（正则寒暄 → 快模型结构化识别 → Command 路由�
 - **混合检索**：稠密 top-N + BM25 top-N → RRF 融合 → DashScope `gte-rerank` Cross-Encoder 精排；精排失败自动回退 RRF 并熔断 5 分钟。Milvus 不可用时返回空结果，规划继续但无知识库上下文。
 - **对话工具**：`modules/chat/workflow/tools.py` 为推荐/规划节点挂载 `search_knowledge` 工具，按当前 `city + user_id` 绑定过滤条件；对话回答涉及攻略细节时优先调用。
 
-**Milvus schema 创建后不可改**：修改字段、维度或度量必须 `init_milvus --recreate`（会清空集合）后重新入库。Milvus 写入后会 flush，入库后无需重启后端。
+**Milvus schema 创建后不可改**：修改字段、维度或度量必须 `init_milvus --recreate`（会清空知识库与记忆集合）后重新入库。Milvus 写入后会 flush，入库后无需重启后端。
 
 ### Redis 缓存
 
@@ -215,8 +232,9 @@ START → intent（正则寒暄 → 快模型结构化识别 → Command 路由�
 
 ### 配置与环境变量
 
-- 后端读仓库根目录 `.env`（pydantic-settings，`core/config.py`）：`POSTGRES_*` / `OPENAI_*` / `EMBEDDING_MODEL_NAME` / `AMAP_API_KEY` / `HOST` / `PORT` / `CORS_ORIGINS` / `LOG_LEVEL` / `MCP_*` / `MILVUS_URI` / `MILVUS_DB_NAME` / `MILVUS_COLLECTION` / `MILVUS_DENSE_DIM` / `MILVUS_RERANK_*` / `MINERU_*` / `KNOWLEDGE_MARKDOWN_NORMALIZE` / `REDIS_ENABLED` / `REDIS_URL` / `REDIS_TTL` / `REDIS_KEY_PREFIX` / `REDIS_TIMEOUT` 等。
-- `settings.milvus` 是独立配置组（`Milvus`）；默认 `http://127.0.0.1:19530`、`knowledge_chunks`、稠密 1024 维 COSINE、BM25 稀疏、`gte-rerank-v2`。项目只使用 Milvus，没有其他向量库后端。
+- 后端读仓库根目录 `.env`（pydantic-settings，`core/config.py`）：`POSTGRES_*` / `OPENAI_*` / `EMBEDDING_MODEL_NAME` / `AMAP_API_KEY` / `HOST` / `PORT` / `CORS_ORIGINS` / `LOG_LEVEL` / `MCP_*` / `MILVUS_URI` / `MILVUS_DB_NAME` / `MILVUS_COLLECTION` / `MILVUS_MEMORY_COLLECTION` / `MILVUS_DENSE_DIM` / `MILVUS_RERANK_*` / `MINERU_*` / `KNOWLEDGE_MARKDOWN_NORMALIZE` / `MEMORY_*` / `REDIS_ENABLED` / `REDIS_URL` / `REDIS_TTL` / `REDIS_KEY_PREFIX` / `REDIS_TIMEOUT` 等。
+- `settings.milvus` 是独立配置组（`Milvus`）；默认 `http://127.0.0.1:19530`、知识库 `knowledge_chunks`、长期记忆 `user_memories`、稠密 1024 维 COSINE、BM25 稀疏、`gte-rerank-v2`。项目只使用 Milvus，没有其他向量库后端。
+- `settings.memory` 是独立配置组（`Memory`）：`MEMORY_ENABLED` / `MEMORY_WINDOW_ROUNDS` / `MEMORY_SUMMARY_*` / `MEMORY_EXTRACT_INTERVAL_ROUNDS` / `MEMORY_LONG_TERM_*` / `MEMORY_CONTEXT_MAX_CHARS` / `MEMORY_WRITEBACK_KNOWLEDGE_GAP`。
 - Milvus 采用 Windows Docker Desktop 单容器模式（`milvus-standalone`，内含 embedded etcd + 本地存储），端口 `19530` / `9091` / `2379`；集合由 `init_milvus` 或应用启动时创建。
 - `settings.database.url` / `checkpoint_url` 由 `build_url()` 自动拼接：前者是 `postgresql+asyncpg://`（SQLAlchemy 元数据增删改查），后者是 `postgresql://`（psycopg checkpointer）。用户名/密码会做 URL 编码；默认值为 `127.0.0.1` / `5432` / `postgres` / `postgres` / `travel_agents`，部署时用 `POSTGRES_*` 覆盖。
 - **Windows 事件循环**：MCP stdio 子进程需要 `ProactorEventLoop`，psycopg async 需要 `SelectorEventLoop`。应用主循环保持 Proactor，`core/database.py` 在独立 Selector 线程里运行 checkpointer 连接池，并把 `aget_tuple` / `aput` / `aput_writes` / `adelete_thread` 等 async 方法代理回来。uvicorn 的 `loop` 用 `backend.app.core.runtime:proactor_loop_factory`。
@@ -243,6 +261,10 @@ START → intent（正则寒暄 → 快模型结构化识别 → Command 路由�
 - 检索过滤必须下推：管理端 `scope=admin + city`，用户内容 `scope=user + owner_id`。
 - Cross-Encoder 精排失败要回退 RRF，不要让检索整体失败。
 - 知识库检索只走 Milvus；Milvus 故障时返回空上下文，不要重新引入其他向量库后端。
+- 记忆摘要只是提示词材料，checkpointer 里的消息原文才是唯一事实来源；滚动摘要必须拼接旧摘要，不确定信息标注“待确认”。
+- 长期记忆只能写入 `MILVUS_MEMORY_COLLECTION`（默认 `user_memories`），不要混入 `knowledge_chunks`。
+- 记忆读写失败必须降级为无记忆继续对话；`memory_save` 必须异步，不得推迟 SSE `done` 事件。
+- 新增记忆状态字段必须同步加到 `ChatState`、`initial_chat_state()`；闲聊子图需要的字段同步加到 `ChitchatState`。
 - 保持防幻觉契约：LLM 只输出框架与名称，详情由系统按名称确定性回填。
 - 保持 Vite 代理使用 `127.0.0.1` 而非 `localhost`，否则 Node 可能解析到 IPv6 `::1` 导致连不上后端。
 - 前端超时保持 10 分钟（axios/fetch 与 Vite 代理），Agent 单次运行可能长达约 5 分钟。
@@ -263,6 +285,9 @@ START → intent（正则寒暄 → 快模型结构化识别 → Command 路由�
 - 不要用 `upsert` 代替「先删再加」；Milvus 删除必须按 `doc_id + owner_id + scope` 精确定位。
 - 不要在 Cross-Encoder 失败时吞掉检索结果；必须回退 RRF 融合。
 - 不要重新引入 Chroma 或其他第二套向量库（已按用户要求彻底移除）。
+- 不要用会话摘要覆盖或删除 checkpointer 中的消息原文。
+- 不要把长期记忆写进知识库集合，也不要在轮末同步执行记忆抽取拖慢回复。
+- 不要把“待确认”的长期记忆以已确认事实的口吻注入提示词。
 - 不要在 `/api/v1` 之外新增旧 `/api` 别名；前端 `services/api.ts` 已统一使用 `/api/v1`。
 
 ## 仓库特定注意事项
@@ -293,6 +318,8 @@ START → intent（正则寒暄 → 快模型结构化识别 → Command 路由�
 - 评估规则：`backend/app/agent/nodes/evaluation.py`
 - 会话 / 对话：`backend/app/modules/sessions/`、`backend/app/modules/chat/`
 - 对话工作流（意图路由 / 闲聊子图 / 安全围栏）：`backend/app/modules/chat/workflow/`
+- 分层记忆（摘要压缩 / 事实抽取 / 长期记忆）：`backend/app/modules/memory/`
+- 长期记忆向量层：`backend/app/integrations/memory_milvus.py`
 - 对话与检索评测：`backend/app/evaluation/chat_eval.py`、`retrieval_eval.py`、`datasets/`
 - 知识库与 RAG 入库：`backend/app/modules/knowledge/`、`backend/app/integrations/milvus.py`
 - 父子块切分：`backend/app/modules/knowledge/chunking.py`

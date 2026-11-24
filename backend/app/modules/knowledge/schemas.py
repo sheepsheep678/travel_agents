@@ -34,3 +34,11 @@ class KnowledgeListResponse(BaseModel):
 class KnowledgeDeleteResponse(BaseModel):
     success: bool = True
     message: str = ""
+
+
+class KnowledgeConfigResponse(BaseModel):
+    """上传限制，供前端展示与本地校验，避免前后端上限不一致。"""
+
+    success: bool = True
+    max_file_mb: int
+    max_text_chars: int

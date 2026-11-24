@@ -38,12 +38,19 @@ SAFETY_SYSTEM = """你是旅行助手的安全审核员。判断助手回复能�
 只输出结构化结果。"""
 
 
-def build_intent_user(query: str, previous_workflow: str, last_reply: str) -> str:
-    """意图识别的用户提示：本轮输入 + 上一轮路由与回复。"""
+def build_intent_user(
+    query: str,
+    previous_workflow: str,
+    last_reply: str,
+    memory: str = "",
+) -> str:
+    """意图识别的用户提示：本轮输入 + 上一轮上下文 + 精简记忆。"""
+    memory = (memory or "").strip()
     return (
         f"用户输入：{query}\n"
         f"上一轮路由：{previous_workflow or '无'}\n"
-        f"上一轮回复：{(last_reply or '无')[:200]}"
+        f"上一轮回复：{(last_reply or '无')[:200]}\n"
+        f"记忆上下文：{memory[:400] or '无'}"
     )
 
 

@@ -17,6 +17,7 @@ from backend.app.core.exceptions import (
     PermissionDeniedError,
 )
 from backend.app.modules.knowledge.schemas import (
+    KnowledgeConfigResponse,
     KnowledgeDeleteResponse,
     KnowledgeListResponse,
     KnowledgeUploadResponse,
@@ -103,6 +104,15 @@ async def list_knowledge(
     user_id = _validate_user(user_id)
     items = await service.list_documents(user_id)
     return KnowledgeListResponse(success=True, items=items)
+
+
+@router.get("/config", response_model=KnowledgeConfigResponse, summary="知识库上传限制")
+async def knowledge_config() -> KnowledgeConfigResponse:
+    """返回后端生效的上传上限，前端据此做本地校验与提示。"""
+    return KnowledgeConfigResponse(
+        max_file_mb=settings.knowledge.max_file_mb,
+        max_text_chars=settings.knowledge.max_text_chars,
+    )
 
 
 @router.delete("/{doc_id}", response_model=KnowledgeDeleteResponse, summary="删除用户知识库文档")

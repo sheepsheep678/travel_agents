@@ -20,15 +20,21 @@ from backend.app.core.exception_handlers import register_exception_handlers
 from backend.app.core.logging import get_logger, setup_logging
 from backend.app.integrations.cache import close_cache, init_cache
 from backend.app.integrations.mcp import close_mcp, init_mcp_async
+from backend.app.integrations.memory_milvus import (
+    init_memory_milvus,
+    memory_milvus_error,
+)
 from backend.app.integrations.milvus import close_milvus, init_milvus, milvus_error
 from backend.app.modules.chat.router import router as chat_router
 from backend.app.modules.health.router import router as health_router
 from backend.app.modules.knowledge.router import router as knowledge_router
+from backend.app.modules.memory.router import router as memory_router
 from backend.app.modules.sessions.router import router as sessions_router
 from backend.app.modules.trip.router import router as trip_router
 
 # 显式导入 ORM 模型，确保 Base.metadata 在建表前已注册全部表
 from backend.app.modules.knowledge import models as _knowledge_models  # noqa: F401
+from backend.app.modules.memory import models as _memory_models  # noqa: F401
 from backend.app.modules.sessions import models as _session_models  # noqa: F401
 from backend.app.modules.trip import models as _trip_models  # noqa: F401
 
@@ -63,6 +69,23 @@ async def lifespan(_: FastAPI):
             )
     except Exception as exc:
         logger.warning("Milvus 初始化异常，知识库检索将不可用", error=str(exc))
+
+    # 3.1) Milvus 用户长期记忆集合（失败不阻断，长期记忆降级为空）
+    logger.info("正在初始化 Milvus 记忆集合 ...")
+    try:
+        memory_ready = await asyncio.to_thread(init_memory_milvus)
+        if memory_ready:
+            logger.info(
+                "Milvus 记忆集合初始化完成",
+                collection=settings.milvus.memory_collection,
+            )
+        else:
+            logger.warning(
+                "Milvus 记忆集合未就绪，长期记忆将不可用",
+                error=memory_milvus_error(),
+            )
+    except Exception as exc:
+        logger.warning("Milvus 记忆集合初始化异常，长期记忆将不可用", error=str(exc))
 
     # 4) Redis 缓存：工具结果 / 对话回复 / 检索结果（失败不阻断，缓存降级为直通）
     await init_cache()
@@ -103,6 +126,7 @@ def create_app() -> FastAPI:
     app.include_router(sessions_router, prefix="/api/v1")
     app.include_router(chat_router, prefix="/api/v1")
     app.include_router(knowledge_router, prefix="/api/v1")
+    app.include_router(memory_router, prefix="/api/v1")
     app.include_router(trip_router, prefix="/api/v1")
 
     @app.get("/", tags=["system"], summary="服务信息")

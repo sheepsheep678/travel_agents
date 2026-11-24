@@ -189,6 +189,10 @@ class Settings:
         collection: str = Field(
             default="knowledge_chunks", validation_alias="MILVUS_COLLECTION"
         )
+        # 用户长期记忆使用独立集合，避免污染知识库检索
+        memory_collection: str = Field(
+            default="user_memories", validation_alias="MILVUS_MEMORY_COLLECTION"
+        )
         dense_dim: int = Field(default=1024, validation_alias="MILVUS_DENSE_DIM")
         dense_metric: str = Field(
             default="COSINE", validation_alias="MILVUS_DENSE_METRIC"
@@ -316,6 +320,47 @@ class Settings:
             default=True, validation_alias="CHAT_SAFETY_LLM_ENABLED"
         )
 
+    class Memory(_SettingsGroup):
+        """分层记忆：工作窗口 + 情景摘要 + 跨会话长期记忆。"""
+
+        enabled: bool = Field(default=True, validation_alias="MEMORY_ENABLED")
+        # 工作记忆：保留最近 N 轮完整原文（按用户消息计数）
+        window_rounds: int = Field(default=5, validation_alias="MEMORY_WINDOW_ROUNDS")
+        # 达到该消息数后才触发窗口外摘要压缩（默认约 6 轮）
+        summary_trigger_messages: int = Field(
+            default=12, validation_alias="MEMORY_SUMMARY_TRIGGER_MESSAGES"
+        )
+        # 每次至少压缩这么多条新消息，避免每轮都调用模型
+        summary_min_new_messages: int = Field(
+            default=6, validation_alias="MEMORY_SUMMARY_MIN_NEW_MESSAGES"
+        )
+        summary_max_chars: int = Field(
+            default=2400, validation_alias="MEMORY_SUMMARY_MAX_CHARS"
+        )
+        summary_timeout: float = Field(
+            default=45.0, validation_alias="MEMORY_SUMMARY_TIMEOUT"
+        )
+        # 定期批量抽取长期记忆的轮次间隔
+        extract_interval_rounds: int = Field(
+            default=3, validation_alias="MEMORY_EXTRACT_INTERVAL_ROUNDS"
+        )
+        long_term_enabled: bool = Field(
+            default=True, validation_alias="MEMORY_LONG_TERM_ENABLED"
+        )
+        long_term_top_k: int = Field(
+            default=6, validation_alias="MEMORY_LONG_TERM_TOP_K"
+        )
+        long_term_min_importance: int = Field(
+            default=2, validation_alias="MEMORY_LONG_TERM_MIN_IMPORTANCE"
+        )
+        context_max_chars: int = Field(
+            default=1800, validation_alias="MEMORY_CONTEXT_MAX_CHARS"
+        )
+        # 知识库检索为空时回写“知识缺口”，避免模型凭空补全
+        writeback_knowledge_gap: bool = Field(
+            default=True, validation_alias="MEMORY_WRITEBACK_KNOWLEDGE_GAP"
+        )
+
     class Mcp(_SettingsGroup):
         init_timeout: float = Field(default=60.0, validation_alias="MCP_INIT_TIMEOUT")
         local_timezone: str = Field(default="Asia/Shanghai", validation_alias="LOCAL_TIMEZONE")
@@ -339,15 +384,13 @@ class Settings:
         self.planner = self.Planner()
         self.knowledge = self.Knowledge()
         self.chat = self.Chat()
+        self.memory = self.Memory()
         self.logging = self.Logging()
         self.mcp = self.Mcp()
 
 
+# 唯一配置实例：其他模块直接 ``from backend.app.core.config import settings``
 settings = Settings()
-
-
-def get_settings() -> Settings:
-    return settings
 
 
 def validate_config() -> bool:

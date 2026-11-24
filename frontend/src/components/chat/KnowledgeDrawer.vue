@@ -71,7 +71,7 @@
               <template v-else>
                 <span class="kd-drop-plus">＋</span>
                 <span class="kd-drop-title">点击选择，或把文件拖到这里</span>
-                <span class="kd-drop-hint">MD / TXT / PDF / 截图，单文件 ≤ 10MB</span>
+                <span class="kd-drop-hint">MD / TXT / PDF / 截图，单文件 ≤ {{ maxFileMb }}MB</span>
               </template>
             </label>
 
@@ -80,11 +80,11 @@
               <textarea
                 v-model="text"
                 class="kd-textarea"
-                :maxlength="MAX_TEXT"
+                :maxlength="maxTextChars"
                 rows="5"
                 placeholder="粘贴攻略、路线或注意事项，例如：Day1 栈桥 → 八大关 → 五四广场…"
               ></textarea>
-              <span class="kd-counter">{{ text.length }} / {{ MAX_TEXT }}</span>
+              <span class="kd-counter">{{ text.length }} / {{ maxTextChars }}</span>
             </label>
 
             <div class="kd-row">
@@ -152,9 +152,14 @@
 </template>
 
 <script setup lang="ts">
-import { onMounted, onUnmounted, ref, watch } from 'vue'
+import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
 import { message, Modal } from 'ant-design-vue'
-import { deleteKnowledge, listKnowledge, uploadKnowledge } from '../../services/api'
+import {
+  deleteKnowledge,
+  getKnowledgeConfig,
+  listKnowledge,
+  uploadKnowledge,
+} from '../../services/api'
 import type { KnowledgeItem } from '../../types'
 
 const props = defineProps<{
@@ -167,10 +172,27 @@ const emit = defineEmits<{
   uploaded: [item: KnowledgeItem]
 }>()
 
-const MAX_FILE_MB = 10
-const MAX_FILE = MAX_FILE_MB * 1024 * 1024
-const MAX_TEXT = 20000
+// 上限以后端配置为准（GET /knowledge/config），后端不可达时用默认值兜底。
+const DEFAULT_MAX_FILE_MB = 10
+const DEFAULT_MAX_TEXT_CHARS = 20000
 const ALLOWED_EXT = ['.md', '.txt', '.pdf', '.png', '.jpg', '.jpeg', '.webp']
+
+const maxFileMb = ref(DEFAULT_MAX_FILE_MB)
+const maxTextChars = ref(DEFAULT_MAX_TEXT_CHARS)
+const maxFileBytes = computed(() => maxFileMb.value * 1024 * 1024)
+let limitsLoaded = false
+
+async function loadLimits() {
+  if (limitsLoaded) return
+  try {
+    const config = await getKnowledgeConfig()
+    if (config.max_file_mb > 0) maxFileMb.value = config.max_file_mb
+    if (config.max_text_chars > 0) maxTextChars.value = config.max_text_chars
+    limitsLoaded = true
+  } catch {
+    // 保留默认上限；超出上限时后端仍会二次校验。
+  }
+}
 
 const tab = ref<'upload' | 'list'>('upload')
 const fileInput = ref<HTMLInputElement>()
@@ -214,8 +236,8 @@ function setFile(picked: File) {
     error.value = '不支持的文件类型，请上传 MD / TXT / PDF / 图片'
     return
   }
-  if (picked.size > MAX_FILE) {
-    error.value = `文件超过 ${MAX_FILE_MB}MB`
+  if (picked.size > maxFileBytes.value) {
+    error.value = `文件超过 ${maxFileMb.value}MB`
     return
   }
   file.value = picked
@@ -328,7 +350,10 @@ function onKeydown(event: KeyboardEvent) {
 watch(
   () => props.open,
   (open) => {
-    if (open) load()
+    if (open) {
+      loadLimits()
+      load()
+    }
   },
 )
 
@@ -344,6 +369,7 @@ watch(
 
 onMounted(() => {
   window.addEventListener('keydown', onKeydown)
+  loadLimits()
   if (props.open) load()
 })
 

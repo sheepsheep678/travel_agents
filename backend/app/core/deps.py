@@ -10,6 +10,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from backend.app.core.database import get_db
 from backend.app.modules.chat.service import ChatService
 from backend.app.modules.knowledge.service import KnowledgeService
+from backend.app.modules.memory.service import MemoryService
 from backend.app.modules.sessions.service import SessionService
 from backend.app.modules.trip.service import TripService
 
@@ -32,7 +33,12 @@ def get_chat_service(db: DbSession) -> ChatService:
     return ChatService(db)
 
 
+def get_memory_service(db: DbSession) -> MemoryService:
+    return MemoryService(db)
+
+
 SessionServiceDep = Annotated[SessionService, Depends(get_session_service)]
 KnowledgeServiceDep = Annotated[KnowledgeService, Depends(get_knowledge_service)]
 TripServiceDep = Annotated[TripService, Depends(get_trip_service)]
 ChatServiceDep = Annotated[ChatService, Depends(get_chat_service)]
+MemoryServiceDep = Annotated[MemoryService, Depends(get_memory_service)]

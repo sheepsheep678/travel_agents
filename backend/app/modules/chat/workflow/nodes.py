@@ -21,6 +21,7 @@ from langgraph.graph import END
 from langgraph.types import Command
 
 from backend.app.core.config import settings
+from backend.app.core.database import get_session_factory
 from backend.app.core.logging import get_logger
 from backend.app.integrations.cache import cache_get_json, cache_set_json, make_key
 from backend.app.integrations.mcp import get_mcp_tool
@@ -38,6 +39,11 @@ from backend.app.modules.chat.workflow.state import (
     IntentType,
     last_ai_text,
     last_human_text,
+)
+from backend.app.modules.memory.service import (
+    MemoryService,
+    schedule_memory_save,
+    window_messages,
 )
 
 logger = get_logger(__name__)
@@ -187,6 +193,82 @@ def _sanitize_history(messages: list[AnyMessage]) -> list[AnyMessage]:
     return cleaned
 
 
+def _memory_block(state: ChatState | ChitchatState) -> str:
+    """把摘要、事实、任务状态与长期记忆拼成一个精简系统区块。"""
+    parts: list[str] = []
+    summary = (state.get("memory_summary") or "").strip()
+    if summary:
+        parts.append(f"【会话记忆摘要】\n{summary}")
+
+    facts = state.get("memory_facts") or {}
+    if isinstance(facts, dict):
+        confirmed = list(facts.get("confirmed") or [])[:12]
+        pending = list(facts.get("pending") or [])[:8]
+        if confirmed:
+            parts.append(
+                "【会话已确认事实】\n" + "\n".join(f"- {item}" for item in confirmed)
+            )
+        if pending:
+            parts.append(
+                "【待确认信息】\n" + "\n".join(f"- {item}" for item in pending)
+            )
+
+    task_state = state.get("memory_task_state") or {}
+    if isinstance(task_state, dict):
+        fields = [
+            f"{label}：{task_state[key]}"
+            for key, label in (
+                ("city", "城市"),
+                ("days", "天数"),
+                ("people", "同行人"),
+                ("budget", "预算"),
+                ("dates", "日期"),
+                ("notes", "其他约束"),
+            )
+            if str(task_state.get(key) or "").strip()
+        ]
+        if fields:
+            parts.append("【当前任务状态】\n" + "；".join(fields))
+
+    context = (state.get("memory_context") or "").strip()
+    if context:
+        parts.append(context)
+    return "\n\n".join(parts)
+
+
+def _memory_signature(state: ChatState | ChitchatState) -> str:
+    """记忆上下文指纹，避免摘要变化后命中旧回复缓存。"""
+    return json.dumps(
+        {
+            "summary": state.get("memory_summary") or "",
+            "facts": state.get("memory_facts") or {},
+            "task": state.get("memory_task_state") or {},
+            "context": state.get("memory_context") or "",
+        },
+        ensure_ascii=False,
+        sort_keys=True,
+        default=str,
+    )
+
+
+def build_working_messages(
+    state: ChatState | ChitchatState, system_prompt: str
+) -> list[AnyMessage]:
+    """系统提示 + 记忆区块 + 最近 N 轮原文；窗口外的历史只以摘要出现。"""
+    history = _sanitize_history(list(state.get("messages") or []))
+    if settings.memory.enabled and settings.memory.window_rounds > 0:
+        window = window_messages(history, settings.memory.window_rounds)
+    else:
+        # 记忆关闭时保留旧行为：按消息条数截断
+        window = history[-settings.chat.max_history_messages:]
+    window = _sanitize_history(window)
+    system_parts = [system_prompt]
+    memory = _memory_block(state)
+    if memory:
+        system_parts.append(memory)
+    return [SystemMessage(content="\n\n".join(system_parts)), *window]
+
+
 def _tool_text(result: Any) -> str:
     """把工具返回值统一成文本，并按配置截断。"""
     if isinstance(result, tuple):
@@ -245,7 +327,12 @@ async def intent_node(state: ChatState, *, intent_llm: Any) -> Command:
             [
                 SystemMessage(content=INTENT_SYSTEM),
                 HumanMessage(
-                    content=build_intent_user(query, previous, last_ai_text(messages))
+                    content=build_intent_user(
+                        query,
+                        previous,
+                        last_ai_text(messages),
+                        _memory_block(state),
+                    )
                 ),
             ]
         )
@@ -326,10 +413,11 @@ async def chitchat_reply_node(state: ChitchatState, *, llm: Any) -> dict:
             "pending_reply": CHITCHAT_LIMIT_REPLY,
         }
 
-    history = _sanitize_history(
-        list(state.get("messages") or [])[-settings.chat.max_history_messages:]
+    messages = build_working_messages(state, CHITCHAT_SYSTEM)
+    history = messages[1:]
+    cache_key = make_key(
+        "chat", "chitchat", _fingerprint(history), _memory_signature(state)
     )
-    cache_key = make_key("chat", "chitchat", _fingerprint(history))
     cached = None if _skip_reply_cache() else await cache_get_json(cache_key)
     if isinstance(cached, str) and cached:
         return {
@@ -340,7 +428,7 @@ async def chitchat_reply_node(state: ChitchatState, *, llm: Any) -> dict:
 
     parts: list[str] = []
     try:
-        async for chunk in llm.astream([SystemMessage(content=CHITCHAT_SYSTEM)] + history):
+        async for chunk in llm.astream(messages):
             text = _chunk_text(chunk)
             if text:
                 parts.append(text)
@@ -363,6 +451,72 @@ async def emit_reply_node(state: ChatState) -> dict:
 
 
 # ---------------------------------------------------------------------------
+# 记忆：轮首加载 / 压缩，轮末异步写入
+# ---------------------------------------------------------------------------
+
+
+async def memory_load_node(state: ChatState) -> dict:
+    """加载情景/长期记忆；窗口外历史达到阈值时做滚动摘要压缩。"""
+    if not settings.memory.enabled:
+        return {}
+
+    user_id = (state.get("user_id") or "").strip()
+    session_id = (state.get("session_id") or "").strip()
+    if not user_id or not session_id:
+        # 评测 / 未登录场景跳过数据库写入
+        return {}
+
+    messages = list(state.get("messages") or [])
+    query = last_human_text(messages)
+    city = state.get("city") or ""
+    fallback = {
+        "memory_summary": state.get("memory_summary") or "",
+        "memory_facts": state.get("memory_facts") or {},
+        "memory_task_state": state.get("memory_task_state") or {},
+        "memory_context": state.get("memory_context") or "",
+        "turn_count": int(state.get("turn_count") or 0) + 1,
+    }
+
+    try:
+        factory = get_session_factory()
+    except RuntimeError:
+        return fallback
+
+    try:
+        async with factory() as db:
+            service = MemoryService(db)
+            row = await service.refresh_session_memory(
+                session_id, user_id, messages, city
+            )
+            await db.commit()
+            context = await service.build_context(user_id, city, query)
+    except Exception as exc:
+        logger.warning("记忆加载失败，沿用已有记忆", session_id=session_id, error=str(exc))
+        return fallback
+
+    return {
+        "memory_summary": row.summary or "",
+        "memory_facts": row.facts or {},
+        "memory_task_state": row.task_state or {},
+        "memory_context": context,
+        "turn_count": int(row.turn_count or 0),
+    }
+
+
+async def memory_save_node(state: ChatState) -> dict:
+    """轮末异步写入：显式指令、事实确认、定期批量、检索失败回写。"""
+    schedule_memory_save(
+        user_id=(state.get("user_id") or "").strip(),
+        session_id=(state.get("session_id") or "").strip(),
+        city=state.get("city") or "",
+        turn_count=int(state.get("turn_count") or 0),
+        messages=list(state.get("messages") or []),
+        memory_facts=state.get("memory_facts") or {},
+    )
+    return {}
+
+
+# ---------------------------------------------------------------------------
 # 推荐 / 规划：LLM 绑定工具 → 工具节点 → 回到 LLM，直到给出最终回答
 # ---------------------------------------------------------------------------
 
@@ -377,13 +531,15 @@ async def agent_llm_node(
 ) -> dict:
     """推荐/规划主回答：流式调用绑定工具的模型，产出回答或工具调用。"""
     writer = _get_writer()
-    history = _sanitize_history(
-        list(state.get("messages") or [])[-settings.chat.max_history_messages:]
-    )
-    messages = [SystemMessage(content=system_prompt)] + history
+    messages = build_working_messages(state, system_prompt)
+    history = messages[1:]
 
     cache_key = make_key(
-        "chat", workflow, state.get("city") or "", _fingerprint(history)
+        "chat",
+        workflow,
+        state.get("city") or "",
+        _fingerprint(history),
+        _memory_signature(state),
     )
     cached = None if _skip_reply_cache() else await cache_get_json(cache_key)
     if isinstance(cached, str) and cached:
@@ -398,7 +554,7 @@ async def agent_llm_node(
         messages = [
             SystemMessage(
                 content=(
-                    f"{system_prompt}\n"
+                    f"{messages[0].content}\n"
                     "已达到工具调用次数上限，请直接基于已获得的信息作答；"
                     "缺失的实时信息如实说明无法查询，不要编造。"
                 )

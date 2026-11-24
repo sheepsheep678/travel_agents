@@ -2,6 +2,7 @@ import axios from 'axios'
 import type {
   ChatRequest,
   ChatStreamEvent,
+  KnowledgeConfigResponse,
   KnowledgeListResponse,
   KnowledgeUploadResponse,
   ServerSession,
@@ -87,6 +88,12 @@ export async function uploadKnowledge(
   const { data } = await http.post<KnowledgeUploadResponse>('/knowledge/upload', formData, {
     signal,
   })
+  return data
+}
+
+/** 读取后端生效的上传上限（文件大小 / 文本长度）。 */
+export async function getKnowledgeConfig(signal?: AbortSignal): Promise<KnowledgeConfigResponse> {
+  const { data } = await http.get<KnowledgeConfigResponse>('/knowledge/config', { signal })
   return data
 }
 
