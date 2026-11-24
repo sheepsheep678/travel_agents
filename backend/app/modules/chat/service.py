@@ -60,6 +60,8 @@ class ChatService:
         config = chat_config(session.id)
 
         if request.regenerate:
+            # 重新生成要拿到新回复，绕过 Redis 里的对话回复缓存
+            config["configurable"]["skip_cache"] = True
             await self._remove_last_answer(agent, config)
             await self.sessions.update_session(
                 session, city=(request.city or None)

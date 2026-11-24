@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import asyncio
+import json
 import re
 import uuid
 from typing import Any, Optional
@@ -12,13 +14,16 @@ from langchain_core.messages import (
     HumanMessage,
     RemoveMessage,
     SystemMessage,
+    ToolMessage,
 )
-from langgraph.config import get_stream_writer
+from langgraph.config import get_config, get_stream_writer
 from langgraph.graph import END
 from langgraph.types import Command
 
 from backend.app.core.config import settings
 from backend.app.core.logging import get_logger
+from backend.app.integrations.cache import cache_get_json, cache_set_json, make_key
+from backend.app.integrations.mcp import get_mcp_tool
 from backend.app.modules.chat.workflow.prompts import (
     CHITCHAT_SYSTEM,
     INTENT_SYSTEM,
@@ -124,6 +129,86 @@ def _last_ai_message(messages: list[AnyMessage]) -> Optional[AIMessage]:
     return None
 
 
+def _skip_reply_cache() -> bool:
+    """重新生成时由 ChatService 注入 skip_cache，绕过对话回复缓存。"""
+    try:
+        return bool(get_config().get("configurable", {}).get("skip_cache"))
+    except Exception:
+        return False
+
+
+def _merge_chunks(chunks: list[Any]) -> Any:
+    """把流式片段合并成一条完整消息。"""
+    if not chunks:
+        return None
+    merged = chunks[0]
+    for chunk in chunks[1:]:
+        merged = merged + chunk
+    return merged
+
+
+def _fingerprint(messages: list[AnyMessage]) -> str:
+    """把提示词上下文压缩成稳定指纹，用于回复缓存。"""
+    rows = [
+        [
+            message.type,
+            _chunk_text(message),
+            [call.get("name") for call in (getattr(message, "tool_calls", None) or [])],
+        ]
+        for message in messages
+    ]
+    return json.dumps(rows, ensure_ascii=False, default=str)
+
+
+def _sanitize_history(messages: list[AnyMessage]) -> list[AnyMessage]:
+    """剔除未配对的工具调用，避免 Provider 因悬空 tool_calls 报错。"""
+    cleaned: list[AnyMessage] = []
+    index = 0
+    while index < len(messages):
+        message = messages[index]
+        if isinstance(message, ToolMessage):
+            index += 1
+            continue
+        if isinstance(message, AIMessage) and getattr(message, "tool_calls", None):
+            call_ids = {call.get("id") for call in message.tool_calls}
+            end = index + 1
+            answered: set = set()
+            while end < len(messages) and isinstance(messages[end], ToolMessage):
+                answered.add(messages[end].tool_call_id)
+                end += 1
+            if call_ids and call_ids.issubset(answered):
+                cleaned.extend(messages[index:end])
+                index = end
+                continue
+            index += 1
+            continue
+        cleaned.append(message)
+        index += 1
+    return cleaned
+
+
+def _tool_text(result: Any) -> str:
+    """把工具返回值统一成文本，并按配置截断。"""
+    if isinstance(result, tuple):
+        result = result[0] if result else ""
+    if isinstance(result, str):
+        text = result
+    elif isinstance(result, list):
+        text = "".join(
+            block if isinstance(block, str) else str(block.get("text") or "")
+            for block in result
+            if isinstance(block, (str, dict))
+        )
+    elif hasattr(result, "content"):
+        text = _chunk_text(result)
+    else:
+        text = str(result)
+    limit = settings.chat.max_tool_result_chars
+    if len(text) > limit:
+        text = text[:limit] + "…"
+    return text or "（工具无返回内容）"
+
+
 # ---------------------------------------------------------------------------
 # 意图识别
 # ---------------------------------------------------------------------------
@@ -134,7 +219,8 @@ async def intent_node(state: ChatState, *, intent_llm: Any) -> Command:
     messages = list(state.get("messages") or [])
     query = last_human_text(messages).strip()
     previous = state.get("activated_workflow") or ""
-    base = {"previous_workflow": previous, "risk_level": 0}
+    # 每轮重置工具轮次，避免上一轮的计数影响本轮工具循环上限
+    base = {"previous_workflow": previous, "risk_level": 0, "tool_round": 0}
 
     if not query:
         return Command(
@@ -240,12 +326,21 @@ async def chitchat_reply_node(state: ChitchatState, *, llm: Any) -> dict:
             "pending_reply": CHITCHAT_LIMIT_REPLY,
         }
 
-    history = [SystemMessage(content=CHITCHAT_SYSTEM)] + list(
-        state.get("messages") or []
-    )[-settings.chat.max_history_messages:]
+    history = _sanitize_history(
+        list(state.get("messages") or [])[-settings.chat.max_history_messages:]
+    )
+    cache_key = make_key("chat", "chitchat", _fingerprint(history))
+    cached = None if _skip_reply_cache() else await cache_get_json(cache_key)
+    if isinstance(cached, str) and cached:
+        return {
+            "messages": [AIMessage(content=cached, id=_new_id())],
+            "chitchat_count": count,
+            "pending_reply": cached,
+        }
+
     parts: list[str] = []
     try:
-        async for chunk in llm.astream(history):
+        async for chunk in llm.astream([SystemMessage(content=CHITCHAT_SYSTEM)] + history):
             text = _chunk_text(chunk)
             if text:
                 parts.append(text)
@@ -253,6 +348,7 @@ async def chitchat_reply_node(state: ChitchatState, *, llm: Any) -> dict:
         logger.warning("闲聊回复生成失败", error=str(exc))
 
     reply = "".join(parts).strip() or CHITCHAT_FALLBACK_REPLY
+    await cache_set_json(cache_key, reply)
     return {
         "messages": [AIMessage(content=reply, id=_new_id())],
         "chitchat_count": count,
@@ -267,43 +363,120 @@ async def emit_reply_node(state: ChatState) -> dict:
 
 
 # ---------------------------------------------------------------------------
-# 推荐 / 规划：绑定全部工具的子 Agent
+# 推荐 / 规划：LLM 绑定工具 → 工具节点 → 回到 LLM，直到给出最终回答
 # ---------------------------------------------------------------------------
 
 
-async def _run_tool_agent(state: ChatState, agent: Any) -> dict:
-    """运行工具子 Agent，边流 token 边收集最终回复。"""
+async def agent_llm_node(
+    state: ChatState,
+    *,
+    llm: Any,
+    plain_llm: Any,
+    system_prompt: str,
+    workflow: str,
+) -> dict:
+    """推荐/规划主回答：流式调用绑定工具的模型，产出回答或工具调用。"""
     writer = _get_writer()
-    history = list(state.get("messages") or [])[-settings.chat.max_history_messages:]
-    final_state: dict = {}
-    try:
-        async for mode, payload in agent.astream(
-            {"messages": history}, stream_mode=["messages", "values"]
-        ):
-            if mode == "messages":
-                chunk, _meta = payload
-                _emit(writer, _chunk_text(chunk))
-            elif isinstance(payload, dict):
-                final_state = payload
-        reply = last_ai_text(final_state.get("messages"))
-    except Exception as exc:
-        logger.exception("工具子 Agent 执行失败", error=str(exc))
-        reply = ""
+    history = _sanitize_history(
+        list(state.get("messages") or [])[-settings.chat.max_history_messages:]
+    )
+    messages = [SystemMessage(content=system_prompt)] + history
 
-    if not reply:
+    cache_key = make_key(
+        "chat", workflow, state.get("city") or "", _fingerprint(history)
+    )
+    cached = None if _skip_reply_cache() else await cache_get_json(cache_key)
+    if isinstance(cached, str) and cached:
+        logger.info("对话回复命中缓存", workflow=workflow)
+        _emit(writer, cached)
+        return {"messages": [AIMessage(content=cached, id=_new_id())]}
+
+    # 达到工具轮次上限后不再绑定工具，并提示模型基于已有信息作答
+    reached_limit = int(state.get("tool_round") or 0) >= settings.chat.max_tool_rounds
+    model = plain_llm if reached_limit else llm
+    if reached_limit:
+        messages = [
+            SystemMessage(
+                content=(
+                    f"{system_prompt}\n"
+                    "已达到工具调用次数上限，请直接基于已获得的信息作答；"
+                    "缺失的实时信息如实说明无法查询，不要编造。"
+                )
+            ),
+            *messages[1:],
+        ]
+
+    chunks: list[Any] = []
+    try:
+        async for chunk in model.astream(messages):
+            text = _chunk_text(chunk)
+            if text:
+                _emit(writer, text)
+            chunks.append(chunk)
+    except Exception as exc:
+        logger.exception("推荐/规划生成失败", workflow=workflow, error=str(exc))
         reply = "抱歉，处理过程中出现问题，请稍后再试。"
         _emit(writer, reply)
-    return {"messages": [AIMessage(content=reply, id=_new_id())]}
+        return {"messages": [AIMessage(content=reply, id=_new_id())]}
+
+    final = _merge_chunks(chunks)
+    content = _chunk_text(final) if final is not None else ""
+    tool_calls = list(getattr(final, "tool_calls", None) or []) if final is not None else []
+    if not content.strip() and not tool_calls:
+        content = "抱歉，我暂时没有生成内容，请再试一次。"
+        _emit(writer, content)
+    elif not tool_calls:
+        await cache_set_json(cache_key, content)
+    return {
+        "messages": [AIMessage(content=content, tool_calls=tool_calls, id=_new_id())]
+    }
 
 
-async def recommend_node(state: ChatState, *, agent: Any) -> dict:
-    """目的地/景点/美食推荐工作流。"""
-    return await _run_tool_agent(state, agent)
+async def _run_tool_call(tools: dict[str, Any], call: dict) -> ToolMessage:
+    """执行单个工具调用：按工具名取工具，异常或缺工具时返回错误文本。"""
+    name = str(call.get("name") or "")
+    call_id = str(call.get("id") or _new_id())
+    tool = tools.get(name) or get_mcp_tool(name)
+    if tool is None:
+        return ToolMessage(
+            content=f"工具 {name} 当前不可用，请基于已有信息回答。",
+            tool_call_id=call_id,
+            name=name or "unknown",
+        )
+    try:
+        result = await tool.ainvoke(call.get("args") or {})
+    except Exception as exc:
+        logger.warning("工具执行失败", tool=name, error=str(exc))
+        return ToolMessage(
+            content=f"工具 {name} 执行失败：{exc}", tool_call_id=call_id, name=name
+        )
+    return ToolMessage(content=_tool_text(result), tool_call_id=call_id, name=name)
 
 
-async def plan_node(state: ChatState, *, agent: Any) -> dict:
-    """行程规划工作流。"""
-    return await _run_tool_agent(state, agent)
+async def agent_tools_node(state: ChatState, *, tools: dict[str, Any]) -> dict:
+    """工具节点：按 tool_call 的工具名查找并执行，结果写回 ToolMessage。"""
+    last = _last_ai_message(list(state.get("messages") or []))
+    calls = list(getattr(last, "tool_calls", None) or []) if last is not None else []
+    round_no = int(state.get("tool_round") or 0) + 1
+    if not calls:
+        return {"tool_round": round_no}
+
+    results = await asyncio.gather(*(_run_tool_call(tools, call) for call in calls))
+    return {"messages": list(results), "tool_round": round_no}
+
+
+def route_after_agent(state: ChatState) -> str:
+    """有工具调用 → 工具节点；否则结束到安全围栏。"""
+    last = _last_ai_message(list(state.get("messages") or []))
+    if last is not None and getattr(last, "tool_calls", None):
+        return "agent_tools"
+    return "safety"
+
+
+def route_after_tools(state: ChatState) -> str:
+    """工具执行后回到发起本轮的工作流。"""
+    workflow = state.get("activated_workflow") or ""
+    return workflow if workflow in ("recommend", "plan") else "safety"
 
 
 # ---------------------------------------------------------------------------

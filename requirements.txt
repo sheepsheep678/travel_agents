@@ -31,3 +31,5 @@ sqlalchemy[asyncio]>=2.0.36
 asyncpg>=0.30.0
 psycopg[binary,pool]>=3.2.0
 langgraph-checkpoint-postgres>=3.2.0,<4.0.0
+# ===== Redis：工具结果 / 对话回复 / 检索结果缓存（TTL 60s） =====
+redis>=5.0.0

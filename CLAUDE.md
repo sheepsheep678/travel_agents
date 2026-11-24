@@ -10,7 +10,8 @@
 - Checkpointer: `langgraph-checkpoint-postgres` + `psycopg`（AsyncPostgresSaver）
 - Logging: structlog（彩色控制台 / 可选 JSON），只在 `main.py` 配置一次
 - RAG: Milvus 3.x（稠密 COSINE + BM25 稀疏向量 + jieba 分析器）+ 条件过滤 + RRF 融合 + DashScope `gte-rerank` Cross-Encoder 精排；父块存 PostgreSQL
-- Data Source: 高德地图 MCP（SSE）、时间 MCP（stdio）、12306 MCP（stdio，`npx -y 12306-mcp`）、Milvus（Docker Desktop，`http://127.0.0.1:19530`）
+- Cache: Redis 8.x（Docker Desktop 单容器，`redis://127.0.0.1:6379`），TTL 60s 缓存工具结果 / 对话回复 / 向量检索结果
+- Data Source: 高德地图 MCP（SSE）、时间 MCP（stdio）、12306 MCP（stdio，`npx -y 12306-mcp`）、Milvus（Docker Desktop，`http://127.0.0.1:19530`）、Redis（Docker Desktop）
 - Frontend: Vue 3 + TypeScript + Vite + Vue Router（`frontend/`）
 - State: `src/store.ts` 轻量 `reactive` store（**不是 Pinia**）；会话与消息以服务端为准
 - Export: 高德 JS API 2.0 / PDF / PNG
@@ -43,6 +44,7 @@ backend/app/
 - 初始化 PostgreSQL（建库 + 建表 + checkpointer）：`python -m backend.app.scripts.init_db`
 - 启动 Milvus 容器（Windows Docker Desktop）：`docker start milvus-standalone`
 - 初始化 Milvus 数据库 / 集合 / BM25 函数 / 索引：`python -m backend.app.scripts.init_milvus`
+- 启动 Redis 缓存容器（Windows Docker Desktop）：`docker start redis`
 - 重建 Milvus 集合（会清空向量）：`python -m backend.app.scripts.init_milvus --recreate`
 - 启动后端（默认 8000 端口）：`python -m backend.app.main`
 - 启动前端（5173 端口，需先 `npm install`）：`cd frontend && npm run dev`
@@ -60,13 +62,13 @@ backend/app/
 
 ### 请求与生命周期
 
-`backend/app/main.py` 是唯一入口：`setup_logging()` 只在这里调用一次；lifespan 依次执行 `validate_config()` → `init_database()`（连接 PG、`create_all`、初始化 checkpointer）→ `init_milvus()`（建集合/索引，失败不阻断，检索降级为空上下文）→ `init_mcp_async()`（高德/时间/12306 独立初始化，单服务失败不阻断启动）。关闭时依次 `close_mcp()` → `close_milvus()` → `close_database()`。
+`backend/app/main.py` 是唯一入口：`setup_logging()` 只在这里调用一次；lifespan 依次执行 `validate_config()` → `init_database()`（连接 PG、`create_all`、初始化 checkpointer）→ `init_milvus()`（建集合/索引，失败不阻断，检索降级为空上下文）→ `init_cache()`（连接 Redis，失败不阻断，缓存降级为直通）→ `init_mcp_async()`（高德/时间/12306 独立初始化，单服务失败不阻断启动）。关闭时依次 `close_mcp()` → `close_cache()` → `close_milvus()` → `close_database()`。
 
 所有业务路由挂载在 `/api/v1` 下：
 
 | 模块 | 路径 | 说明 |
 | --- | --- | --- |
-| health | `GET /api/v1/health` | 数据库、checkpointer、Milvus、各 MCP 服务状态 |
+| health | `GET /api/v1/health` | 数据库、checkpointer、Redis、Milvus、各 MCP 服务状态 |
 | sessions | `/api/v1/sessions` | 创建 / ensure / 列表 / 详情 / 删除 |
 | chat | `POST /api/v1/chat/stream` | 对话 SSE（token / done / error） |
 | knowledge | `/api/v1/knowledge/*` | 用户上传 / 列表 / 删除；管理端上传 |
@@ -136,7 +138,7 @@ LLM 只输出计划**框架与名称**（`agent/nodes/plan.py` 的 `PlannerOutpu
 - `time`（stdio：`python -m mcp_server_time`）：`get_current_time`、`convert_time`。
 - `rail`（stdio：`npx -y 12306-mcp`）：`get-current-date`、`get-station-code-of-citys`、`get-tickets`、`get-interline-tickets` 等 8 个工具。Windows 上经 `cmd.exe /c npx.cmd` 启动。
 
-行程图只使用 amap 工具；对话工作流的推荐/规划子 Agent 通过 `modules/chat/workflow/tools.py` 绑定全部 MCP 工具（amap + time + rail）和知识库工具。工具缺失时行程节点返回 `parse_error` 而不抛异常。MCP 结果是文本块，统一用 `agent/nodes/utils._extract_text()` 解析；详情批量获取用 `fetch_details()`（信号量限流 + 重试）。
+行程图只使用 amap 工具；对话工作流的推荐/规划节点通过 `modules/chat/workflow/tools.py` 把全部 MCP 工具（amap + time + rail）和知识库工具绑定到 LLM。工具缺失时行程节点返回 `parse_error` 而不抛异常。MCP 结果是文本块，统一用 `agent/nodes/utils._extract_text()` 解析；详情批量获取用 `fetch_details()`（信号量限流 + 重试）。
 
 ### 对话 SSE
 
@@ -153,14 +155,16 @@ data: {"type":"error","message":"..."}
 ```
 START → intent（正则寒暄 → 快模型结构化识别 → Command 路由）
           ├─ chitchat（子图：业务意图守卫 → 闲聊回复，轮次上限 3）
-          ├─ recommend / plan（create_agent + 全部工具）
+          ├─ recommend / plan（LLM.bind_tools → 工具节点 → 回到 LLM 循环）
           ├─ human（打印日志模拟转人工）
           ├─ fallback（反问用户）
           └─ dangerous → END（固定拒绝话术）
         上述工作流 → safety（大模型复核）→ END
 ```
 
-- 父状态：`messages` / `previous_workflow` / `activated_workflow` / `pending_reply` / `chitchat_count`；闲聊子图状态声明 `chitchat_count`，计数随父状态往返持久化。
+- 父状态：`messages` / `previous_workflow` / `activated_workflow` / `pending_reply` / `chitchat_count` / `tool_round`；闲聊子图状态声明 `chitchat_count`，计数随父状态往返持久化。
+- 推荐 / 规划不再使用 `create_agent`：`agent_llm_node` 流式调用 `llm.bind_tools(tools)`，`route_after_agent()` 有 `tool_calls` 时路由到 `agent_tools`，`agent_tools_node` 按工具名从 `tool_map`（缺失时回落 `get_mcp_tool`）执行并写回 `ToolMessage`，再按 `activated_workflow` 回到 `recommend` / `plan`；到达 `CHAT_MAX_TOOL_ROUNDS` 后改用未绑定工具的 `plain_llm` 强制作答，避免悬空工具调用。
+- `_sanitize_history()` 会在每次调用模型前剔除未配对的 `AIMessage(tool_calls)` 与孤立 `ToolMessage`，防止客户端中断留下悬空工具调用导致上游 400。
 - 意图识别用快模型 `with_structured_output(IntentResult)`，输出 `intent` / `reason` / `risk_level`；`risk_level >= 3` 或 `dangerous` 直接结束。
 - `ChatService.prepare()` 校验 `user_id + session_id`，通过 `agent.aupdate_state()` 把用户消息写入 checkpointer；
 - `stream()` 用 `agent.astream({"messages": []}, config, stream_mode="custom")`，节点通过 `get_stream_writer()` 推送 `{"type":"token","delta":...}`；意图识别与安全围栏的内部调用不会泄漏到前端。
@@ -181,9 +185,18 @@ START → intent（正则寒暄 → 快模型结构化识别 → Command 路由�
 - **切分**：`modules/knowledge/chunking.py` 先按 H1/H2 分父块，父块内按 H3 子标题、表格、路线、段落切子块；子块文本前缀「文档标题 + 章节」，表格逐行保留表头，路线行保持完整。MinerU 输出的 HTML `<table>` 会在切分前确定性转成 Markdown 管道表格（有 `<th>` 用 `<th>` 做表头，否则合成 `列1/列2…`；`rowspan`/`colspan` 用重复文本补齐），否则整张表会被当成一个普通段落。
 - **写入**：`KnowledgeService.ingest()` 先删同 `doc_id` 的 Milvus 子块和 PG 父块/文档行，再加新数据（先删再加）。管理端语料 `doc_id = admin:{城市}`，用户文档使用随机 hex。
 - **混合检索**：稠密 top-N + BM25 top-N → RRF 融合 → DashScope `gte-rerank` Cross-Encoder 精排；精排失败自动回退 RRF 并熔断 5 分钟。Milvus 不可用时返回空结果，规划继续但无知识库上下文。
-- **对话工具**：`modules/chat/workflow/tools.py` 为推荐/规划子 Agent 挂载 `search_knowledge` 工具，按当前 `city + user_id` 绑定过滤条件；对话回答涉及攻略细节时优先调用。
+- **对话工具**：`modules/chat/workflow/tools.py` 为推荐/规划节点挂载 `search_knowledge` 工具，按当前 `city + user_id` 绑定过滤条件；对话回答涉及攻略细节时优先调用。
 
 **Milvus schema 创建后不可改**：修改字段、维度或度量必须 `init_milvus --recreate`（会清空集合）后重新入库。Milvus 写入后会 flush，入库后无需重启后端。
+
+### Redis 缓存
+
+`integrations/cache.py` 是唯一的缓存层，key 统一带 `REDIS_KEY_PREFIX`（默认 `lvji`）+ 命名空间 + 参数 sha1：
+
+- **工具结果**：`wrap_tool()` 在 `McpRegistry._load_one()` 里给每个 MCP 工具套一层缓存（行程规划与对话两条链路共用），知识库工具在 `_make_knowledge_tool()` 里用 `city:user_id` 作用域单独包装。
+- **向量检索结果**：`retrieve_knowledge()` 在调用 Milvus 前先查缓存，命中直接还原 `Document` 列表（含空结果）。
+- **对话回复**：`agent_llm_node`（推荐/规划）与 `chitchat_reply_node` 用「工作流 + 城市 + 上下文指纹」做 key，命中直接回放最终回答、跳过 LLM；只缓存没有 `tool_calls` 的最终文本。
+- 默认 TTL 60s（`REDIS_TTL`）；Redis 连不上只记 warning，所有读写降级为直通，绝不中断业务。本地 `redis` 容器带 `--requirepass root`，`.env` 的 `REDIS_URL` 需要写 `redis://:root@127.0.0.1:6379/0`。
 
 ### 行程 SSE 进度
 
@@ -202,7 +215,7 @@ START → intent（正则寒暄 → 快模型结构化识别 → Command 路由�
 
 ### 配置与环境变量
 
-- 后端读仓库根目录 `.env`（pydantic-settings，`core/config.py`）：`POSTGRES_*` / `OPENAI_*` / `EMBEDDING_MODEL_NAME` / `AMAP_API_KEY` / `HOST` / `PORT` / `CORS_ORIGINS` / `LOG_LEVEL` / `MCP_*` / `MILVUS_URI` / `MILVUS_DB_NAME` / `MILVUS_COLLECTION` / `MILVUS_DENSE_DIM` / `MILVUS_RERANK_*` / `MINERU_*` / `KNOWLEDGE_MARKDOWN_NORMALIZE` 等。
+- 后端读仓库根目录 `.env`（pydantic-settings，`core/config.py`）：`POSTGRES_*` / `OPENAI_*` / `EMBEDDING_MODEL_NAME` / `AMAP_API_KEY` / `HOST` / `PORT` / `CORS_ORIGINS` / `LOG_LEVEL` / `MCP_*` / `MILVUS_URI` / `MILVUS_DB_NAME` / `MILVUS_COLLECTION` / `MILVUS_DENSE_DIM` / `MILVUS_RERANK_*` / `MINERU_*` / `KNOWLEDGE_MARKDOWN_NORMALIZE` / `REDIS_ENABLED` / `REDIS_URL` / `REDIS_TTL` / `REDIS_KEY_PREFIX` / `REDIS_TIMEOUT` 等。
 - `settings.milvus` 是独立配置组（`Milvus`）；默认 `http://127.0.0.1:19530`、`knowledge_chunks`、稠密 1024 维 COSINE、BM25 稀疏、`gte-rerank-v2`。项目只使用 Milvus，没有其他向量库后端。
 - Milvus 采用 Windows Docker Desktop 单容器模式（`milvus-standalone`，内含 embedded etcd + 本地存储），端口 `19530` / `9091` / `2379`；集合由 `init_milvus` 或应用启动时创建。
 - `settings.database.url` / `checkpoint_url` 由 `build_url()` 自动拼接：前者是 `postgresql+asyncpg://`（SQLAlchemy 元数据增删改查），后者是 `postgresql://`（psycopg checkpointer）。用户名/密码会做 URL 编码；默认值为 `127.0.0.1` / `5432` / `postgres` / `postgres` / `travel_agents`，部署时用 `POSTGRES_*` 覆盖。
@@ -218,6 +231,8 @@ START → intent（正则寒暄 → 快模型结构化识别 → Command 路由�
 - 新增状态字段必须同时加到 `PlannerState` 和 `initial_state()`。
 - 新增图节点必须加入 `agent/constants.py` 的 `NODE_LABELS`，否则前端收不到该节点的 SSE 事件。
 - 对话工作流节点只能通过 `get_stream_writer()` 推送面向用户的 `{"type":"token"}`；`stream_mode` 固定为 `custom`。
+- 推荐 / 规划只能用 `llm.bind_tools()` + `agent_tools_node` 的工具循环，不要恢复 `create_agent`；工具节点必须按工具名取用，并对每个 `tool_call` 都回写 `ToolMessage`（失败也要回写错误文本）。
+- 工具缓存统一走 `integrations/cache.wrap_tool()`，不要在业务代码里手写 Redis 读写；缓存 TTL 保持 60s，Redis 故障时降级为直通。
 - 新增对话状态字段必须同步加到 `ChatState` 与 `initial_chat_state()`；闲聊子图新增字段同步加到 `ChitchatState`。
 - 新增业务接口放在 `modules/<module>/router.py`，挂载时统一加 `/api/v1` 前缀，并用 `Depends` 注入 service 与 DB session。
 - 业务错误抛 `AppError` 子类，不要在各层重复拼 `HTTPException` 响应。
@@ -285,5 +300,6 @@ START → intent（正则寒暄 → 快模型结构化识别 → Command 路由�
 - Markdown 排版优化：`backend/app/modules/knowledge/markdown.py`
 - MinerU / VLM / PDF 抽取：`backend/app/modules/knowledge/extractors.py`
 - Milvus 初始化 CLI：`backend/app/scripts/init_milvus.py`
+- Redis 缓存（工具结果 / 对话回复 / 检索结果）：`backend/app/integrations/cache.py`
 - MCP：`backend/app/integrations/mcp.py`
 - 响应/事件模型：`backend/app/modules/trip/schemas.py`、`frontend/src/types/index.ts`、`frontend/src/services/api.ts`

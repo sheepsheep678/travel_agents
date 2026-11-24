@@ -17,9 +17,13 @@ from backend.app.modules.chat.workflow.state import (
     IntentResult,
     SafetyVerdict,
 )
-from backend.app.modules.chat.workflow.tools import build_tool_agent, collect_tools
+from backend.app.modules.chat.workflow.tools import (
+    build_agent_llm,
+    build_tool_map,
+    collect_tools,
+)
 
-_DIRECT_NODES = ("recommend", "plan", "human", "fallback")
+_SIMPLE_NODES = ("human", "fallback")
 
 
 def _build_chitchat_graph(fast_llm: Any):
@@ -43,6 +47,7 @@ def build_chat_graph(
     fast_llm = get_fast_llm()
     main_llm = get_llm()
     resolved_tools = collect_tools(city, user_id) if tools is None else list(tools)
+    tool_map = build_tool_map(resolved_tools)
     saver = get_checkpointer() if checkpointer is None else checkpointer
 
     intent_llm = fast_llm.with_structured_output(IntentResult)
@@ -51,6 +56,10 @@ def build_chat_graph(
         if settings.chat.safety_llm_enabled
         else None
     )
+    recommend_llm, recommend_prompt = build_agent_llm(
+        "recommend", city, main_llm, resolved_tools
+    )
+    plan_llm, plan_prompt = build_agent_llm("plan", city, main_llm, resolved_tools)
 
     graph = StateGraph(ChatState)
     graph.add_node("intent", partial(nodes.intent_node, intent_llm=intent_llm))
@@ -58,17 +67,24 @@ def build_chat_graph(
     graph.add_node(
         "recommend",
         partial(
-            nodes.recommend_node,
-            agent=build_tool_agent("recommend", city, user_id, main_llm, resolved_tools),
+            nodes.agent_llm_node,
+            llm=recommend_llm,
+            plain_llm=main_llm,
+            system_prompt=recommend_prompt,
+            workflow="recommend",
         ),
     )
     graph.add_node(
         "plan",
         partial(
-            nodes.plan_node,
-            agent=build_tool_agent("plan", city, user_id, main_llm, resolved_tools),
+            nodes.agent_llm_node,
+            llm=plan_llm,
+            plain_llm=main_llm,
+            system_prompt=plan_prompt,
+            workflow="plan",
         ),
     )
+    graph.add_node("agent_tools", partial(nodes.agent_tools_node, tools=tool_map))
     graph.add_node("human", nodes.human_node)
     graph.add_node("fallback", nodes.fallback_node)
     graph.add_node("emit_reply", nodes.emit_reply_node)
@@ -77,7 +93,18 @@ def build_chat_graph(
     graph.add_edge(START, "intent")
     graph.add_edge("chitchat", "emit_reply")
     graph.add_edge("emit_reply", "safety")
-    for name in _DIRECT_NODES:
+    for name in ("recommend", "plan"):
+        graph.add_conditional_edges(
+            name,
+            nodes.route_after_agent,
+            {"agent_tools": "agent_tools", "safety": "safety"},
+        )
+    graph.add_conditional_edges(
+        "agent_tools",
+        nodes.route_after_tools,
+        {"recommend": "recommend", "plan": "plan", "safety": "safety"},
+    )
+    for name in _SIMPLE_NODES:
         graph.add_edge(name, "safety")
     graph.add_edge("safety", END)
 

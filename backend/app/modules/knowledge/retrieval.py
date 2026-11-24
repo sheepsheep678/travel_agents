@@ -22,6 +22,7 @@ from backend.app.agent.constants import RAG_TOP_K
 from backend.app.core.config import settings
 from backend.app.core.database import get_session_factory
 from backend.app.core.logging import get_logger
+from backend.app.integrations.cache import cache_get_json, cache_set_json, make_key
 from backend.app.integrations.milvus import RetrievalHit, ahybrid_search
 from backend.app.modules.knowledge.models import KnowledgeParentChunk
 
@@ -29,6 +30,7 @@ logger = get_logger(__name__)
 
 _MAX_PARENT_CHARS = 4000
 _DEFAULT_SOURCE = "旅迹智绘"
+_CACHE_NAMESPACE = "rag"
 
 
 def _quote(value: str) -> str:
@@ -122,6 +124,30 @@ def _document_from_hit(
     return Document(page_content=content, metadata=metadata)
 
 
+def _documents_to_rows(documents: List[Document]) -> List[dict]:
+    """把检索结果转成可缓存的纯 JSON 结构。"""
+    return [
+        {"page_content": doc.page_content, "metadata": doc.metadata or {}}
+        for doc in documents
+    ]
+
+
+def _rows_to_documents(rows: List[dict]) -> List[Document]:
+    """从缓存结构还原 Document 列表。"""
+    documents: List[Document] = []
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        metadata = row.get("metadata")
+        documents.append(
+            Document(
+                page_content=str(row.get("page_content") or ""),
+                metadata=metadata if isinstance(metadata, dict) else {},
+            )
+        )
+    return documents
+
+
 async def retrieve_knowledge(
     query: str,
     *,
@@ -135,6 +161,12 @@ async def retrieve_knowledge(
         return []
 
     top_k = max(1, int(k or settings.milvus.final_top_k or RAG_TOP_K))
+    cache_key = make_key(_CACHE_NAMESPACE, query, city or "", user_id or "", top_k)
+    cached = await cache_get_json(cache_key)
+    if isinstance(cached, list):
+        logger.info("知识库检索命中缓存", query=query[:40], documents=len(cached))
+        return _rows_to_documents(cached)
+
     expr = build_filter(city, user_id)
     try:
         hits = await ahybrid_search(query, expr=expr, limit=top_k)
@@ -159,6 +191,7 @@ async def retrieve_knowledge(
         if len(documents) >= top_k:
             break
 
+    await cache_set_json(cache_key, _documents_to_rows(documents))
     logger.info(
         "知识库检索完成",
         hits=len(hits),

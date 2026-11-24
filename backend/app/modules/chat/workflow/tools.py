@@ -4,13 +4,13 @@ from __future__ import annotations
 
 from typing import Any
 
-from langchain.agents import create_agent
 from langchain_core.language_models import BaseChatModel
 from langchain_core.tools import BaseTool, StructuredTool
 from pydantic import BaseModel, Field
 
 from backend.app.core.config import settings
 from backend.app.core.logging import get_logger
+from backend.app.integrations.cache import wrap_tool
 from backend.app.integrations.mcp import get_mcp_tools
 from backend.app.modules.chat.workflow.prompts import PLAN_SYSTEM, RECOMMEND_SYSTEM
 from backend.app.modules.knowledge.retrieval import retrieve_knowledge
@@ -23,7 +23,7 @@ class KnowledgeSearchInput(BaseModel):
     top_k: int = Field(default=4, ge=1, le=8, description="返回资料条数")
 
 
-def _make_knowledge_tool(city: str, user_id: str) -> StructuredTool:
+def _make_knowledge_tool(city: str, user_id: str) -> BaseTool:
     """把 city / user_id 绑定进工具闭包，避免模型自行填写归属参数。"""
 
     async def _search(query: str, top_k: int = 4) -> str:
@@ -59,7 +59,7 @@ def _make_knowledge_tool(city: str, user_id: str) -> StructuredTool:
             parts.append(f"[资料{index} 来源:{label}]\n{content}")
         return "\n\n".join(parts)
 
-    return StructuredTool.from_function(
+    tool = StructuredTool.from_function(
         coroutine=_search,
         name="search_knowledge",
         description=(
@@ -68,6 +68,8 @@ def _make_knowledge_tool(city: str, user_id: str) -> StructuredTool:
         ),
         args_schema=KnowledgeSearchInput,
     )
+    # 按 city + user_id 隔离缓存，避免不同用户命中彼此的私有资料
+    return wrap_tool(tool, scope=f"{city}:{user_id}")
 
 
 def collect_tools(city: str, user_id: str) -> list[BaseTool]:
@@ -78,17 +80,20 @@ def collect_tools(city: str, user_id: str) -> list[BaseTool]:
     return tools
 
 
-def build_tool_agent(
+def build_tool_map(tools: list[BaseTool]) -> dict[str, BaseTool]:
+    """构建「工具名 → 工具」映射，供工具节点按名称取用。"""
+    return {tool.name: tool for tool in tools or []}
+
+
+def build_agent_llm(
     kind: str,
     city: str,
-    user_id: str,
     model: BaseChatModel,
     tools: list[BaseTool],
-) -> Any:
-    """构建推荐/规划子 Agent（不挂 checkpointer，由父图统一保存状态）。"""
+) -> tuple[Any, str]:
+    """把系统提示词与工具绑定到模型；没有工具时退化为普通模型。"""
     template = PLAN_SYSTEM if kind == "plan" else RECOMMEND_SYSTEM
     prompt = template.format(city=city or "未确定")
     if not get_mcp_tools():
         prompt += "\n注意：实时工具当前不可用，涉及实时信息时直接说明无法查询，不要编造。"
-
-    return create_agent(model=model, tools=tools or [], system_prompt=prompt)
+    return (model.bind_tools(tools) if tools else model), prompt

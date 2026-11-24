@@ -222,6 +222,17 @@ class Settings:
             default=5.0, validation_alias="MILVUS_CONNECT_TIMEOUT"
         )
 
+    class Redis(_SettingsGroup):
+        """Redis 缓存：工具结果 / 对话回复 / 向量检索结果。"""
+
+        enabled: bool = Field(default=True, validation_alias="REDIS_ENABLED")
+        url: str = Field(
+            default="redis://127.0.0.1:6379/0", validation_alias="REDIS_URL"
+        )
+        ttl: int = Field(default=60, validation_alias="REDIS_TTL")
+        key_prefix: str = Field(default="lvji", validation_alias="REDIS_KEY_PREFIX")
+        timeout: float = Field(default=2.0, validation_alias="REDIS_TIMEOUT")
+
     class Planner(_SettingsGroup):
         max_llm_retries: int = Field(default=1, validation_alias="PLAN_MAX_LLM_RETRIES")
         eval_skip_llm_on_hard_issues: bool = Field(
@@ -283,7 +294,7 @@ class Settings:
         colors: bool = Field(default=True, validation_alias="LOG_COLORS")
 
     class Chat(_SettingsGroup):
-        max_tool_rounds: int = Field(default=3, validation_alias="CHAT_MAX_TOOL_ROUNDS")
+        max_tool_rounds: int = Field(default=15, validation_alias="CHAT_MAX_TOOL_ROUNDS")
         tool_timeout: float = Field(default=60.0, validation_alias="CHAT_TOOL_TIMEOUT")
         response_timeout: float = Field(default=180.0, validation_alias="CHAT_RESPONSE_TIMEOUT")
         max_history_messages: int = Field(
@@ -324,6 +335,7 @@ class Settings:
         self.llm = self.LLM()
         self.rag = self.Rag()
         self.milvus = self.Milvus()
+        self.redis = self.Redis()
         self.planner = self.Planner()
         self.knowledge = self.Knowledge()
         self.chat = self.Chat()

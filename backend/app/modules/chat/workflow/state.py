@@ -48,6 +48,7 @@ class ChatState(TypedDict, total=False):
     risk_level: int
     pending_reply: str
     chitchat_count: int
+    tool_round: int
 
 
 class ChitchatState(TypedDict, total=False):
@@ -70,6 +71,7 @@ def initial_chat_state(city: str = "", user_id: str = "") -> ChatState:
         "risk_level": 0,
         "pending_reply": "",
         "chitchat_count": 0,
+        "tool_round": 0,
     }
 
 

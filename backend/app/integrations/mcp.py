@@ -21,6 +21,7 @@ from langchain_mcp_adapters.client import MultiServerMCPClient
 
 from backend.app.core.config import settings
 from backend.app.core.logging import get_logger
+from backend.app.integrations.cache import wrap_tool
 
 logger = get_logger(__name__)
 
@@ -55,7 +56,8 @@ class McpRegistry:
                 self.client.get_tools(server_name=name),
                 timeout=settings.mcp.init_timeout,
             )
-            self.tools[name] = tools
+            # 统一套一层 Redis 结果缓存：行程规划与对话两条链路都受益
+            self.tools[name] = [wrap_tool(tool) for tool in tools]
             self.errors.pop(name, None)
             logger.info("MCP 服务已加载", server=name, tool_count=len(tools))
             for tool in tools:

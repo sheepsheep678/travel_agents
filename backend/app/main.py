@@ -18,6 +18,7 @@ from backend.app.core.config import settings, validate_config
 from backend.app.core.database import close_database, init_database
 from backend.app.core.exception_handlers import register_exception_handlers
 from backend.app.core.logging import get_logger, setup_logging
+from backend.app.integrations.cache import close_cache, init_cache
 from backend.app.integrations.mcp import close_mcp, init_mcp_async
 from backend.app.integrations.milvus import close_milvus, init_milvus, milvus_error
 from backend.app.modules.chat.router import router as chat_router
@@ -63,7 +64,10 @@ async def lifespan(_: FastAPI):
     except Exception as exc:
         logger.warning("Milvus 初始化异常，知识库检索将不可用", error=str(exc))
 
-    # 4) MCP：高德 / 时间 / 12306（单服务失败不影响启动）
+    # 4) Redis 缓存：工具结果 / 对话回复 / 检索结果（失败不阻断，缓存降级为直通）
+    await init_cache()
+
+    # 5) MCP：高德 / 时间 / 12306（单服务失败不影响启动）
     logger.info("正在初始化 MCP 服务 ...")
     await init_mcp_async()
     logger.info("MCP 服务初始化完成")
@@ -72,6 +76,7 @@ async def lifespan(_: FastAPI):
         yield
     finally:
         await close_mcp()
+        await close_cache()
         close_milvus()
         await close_database()
         logger.info("应用已关闭")
