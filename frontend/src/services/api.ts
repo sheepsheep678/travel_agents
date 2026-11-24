@@ -8,6 +8,7 @@ import type {
   ServerSession,
   SessionResponse,
   StreamEvent,
+  TrainSearchResponse,
   TripPlanResponse,
   TripRequest,
 } from '../types'
@@ -23,6 +24,23 @@ const http = axios.create({
 /** 生成旅行计划（一次性返回完整计划，作为流式接口的兜底） */
 export async function generateTripPlan(req: TripRequest, signal?: AbortSignal): Promise<TripPlanResponse> {
   const { data } = await http.post<TripPlanResponse>('/trip/plan', req, { signal })
+  return data
+}
+
+/** 查询 12306 实时车次（结果页票面轮播使用）。 */
+export async function searchTrainTickets(
+  params: { fromCity: string; toCity: string; date: string; filterFlags?: string },
+  signal?: AbortSignal,
+): Promise<TrainSearchResponse> {
+  const { data } = await http.get<TrainSearchResponse>('/trip/trains', {
+    params: {
+      from_city: params.fromCity,
+      to_city: params.toCity,
+      date: params.date,
+      filter_flags: params.filterFlags ?? '',
+    },
+    signal,
+  })
   return data
 }
 

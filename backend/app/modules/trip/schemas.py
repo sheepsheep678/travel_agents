@@ -181,6 +181,45 @@ class TripPlanResponse(BaseModel):
     data: Optional[TripPlan] = Field(default=None, description="旅行计划数据")
 
 
+class TrainSeatPrice(BaseModel):
+    """12306 车次的坐席余票与票价。"""
+
+    seat_name: str = Field(default="", description="坐席名称，如：二等座")
+    short: str = Field(default="", description="坐席简称")
+    num: Optional[Union[int, str]] = Field(default=None, description="余票数量或状态：有 / 无 / 数字")
+    price: Optional[float] = Field(default=None, description="票价（元）")
+    discount: Optional[int] = Field(default=None, description="折扣")
+
+
+class TrainTicket(BaseModel):
+    """一张 12306 车次票面。"""
+
+    train_no: str = Field(default="", description="内部车次编号")
+    train_code: str = Field(default="", description="展示车次，如：G1064")
+    start_date: str = Field(default="", description="出发日期 YYYY-MM-DD")
+    arrive_date: str = Field(default="", description="到达日期 YYYY-MM-DD")
+    start_time: str = Field(default="", description="出发时间 HH:MM")
+    arrive_time: str = Field(default="", description="到达时间 HH:MM")
+    duration: str = Field(default="", description="历时 HH:MM")
+    from_station: str = Field(default="", description="出发站")
+    to_station: str = Field(default="", description="到达站")
+    from_station_telecode: str = Field(default="", description="出发站电报码")
+    to_station_telecode: str = Field(default="", description="到达站电报码")
+    prices: List[TrainSeatPrice] = Field(default_factory=list, description="坐席票价与余票")
+    flags: List[str] = Field(default_factory=list, description="复兴号 / 智能动车等标签")
+
+
+class TrainSearchResponse(BaseModel):
+    """12306 车次查询响应。"""
+
+    success: bool = Field(default=True, description="是否成功")
+    message: str = Field(default="", description="消息")
+    from_city: str = Field(default="", description="出发城市")
+    to_city: str = Field(default="", description="到达城市")
+    date: str = Field(default="", description="查询日期")
+    tickets: List[TrainTicket] = Field(default_factory=list, description="车次列表")
+
+
 class POIInfo(BaseModel):
     """POI 信息。"""
 

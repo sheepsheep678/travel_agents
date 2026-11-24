@@ -4,11 +4,15 @@ from __future__ import annotations
 
 import json
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, Query
 from sse_starlette.sse import EventSourceResponse
 
 from backend.app.core.deps import get_trip_service
-from backend.app.modules.trip.schemas import TripPlanResponse, TripRequest
+from backend.app.modules.trip.schemas import (
+    TrainSearchResponse,
+    TripPlanResponse,
+    TripRequest,
+)
 from backend.app.modules.trip.service import TripService
 
 router = APIRouter(prefix="/trip", tags=["trip"])
@@ -21,6 +25,23 @@ async def generate_trip_plan(
 ):
     """生成旅行计划（一次性返回完整计划，作为流式接口的兜底）。"""
     return await service.generate(req)
+
+
+@router.get("/trains", response_model=TrainSearchResponse, summary="查询 12306 车次")
+async def search_trains(
+    from_city: str = Query(..., min_length=1, description="出发城市"),
+    to_city: str = Query(..., min_length=1, description="到达城市"),
+    date: str = Query(..., min_length=10, max_length=10, description="出发日期 YYYY-MM-DD"),
+    filter_flags: str = Query("", max_length=8, description="车次类型筛选：G/D/Z/T/K/O/F/S"),
+    service: TripService = Depends(get_trip_service),
+):
+    """查询 12306 实时余票，供结果页车次票面轮播使用。"""
+    return await service.search_trains(
+        from_city=from_city,
+        to_city=to_city,
+        date=date,
+        filter_flags=filter_flags,
+    )
 
 
 @router.post("/plan/stream", summary="生成旅行计划（SSE）")

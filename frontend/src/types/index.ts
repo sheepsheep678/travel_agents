@@ -84,6 +84,41 @@ export interface TripPlanResponse {
   data?: TripPlan | null
 }
 
+/* ---------------- 12306 车次票面 ---------------- */
+
+export interface TrainSeatPrice {
+  seat_name?: string
+  short?: string
+  num?: number | string | null
+  price?: number | null
+  discount?: number | null
+}
+
+export interface TrainTicket {
+  train_no?: string
+  train_code?: string
+  start_date?: string
+  arrive_date?: string
+  start_time?: string
+  arrive_time?: string
+  duration?: string
+  from_station?: string
+  to_station?: string
+  from_station_telecode?: string
+  to_station_telecode?: string
+  prices?: TrainSeatPrice[]
+  flags?: string[]
+}
+
+export interface TrainSearchResponse {
+  success: boolean
+  message?: string
+  from_city?: string
+  to_city?: string
+  date?: string
+  tickets: TrainTicket[]
+}
+
 /** SSE 流式事件（与后端 travel_plan_agent.stream_events 协议一致） */
 export type StreamEvent =
   | { type: 'node_start'; node: string; label: string }
