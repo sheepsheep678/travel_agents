@@ -11,7 +11,16 @@ from langgraph.constants import START, END
 from langgraph.graph import StateGraph
 from langgraph.types import RetryPolicy
 
-from backend.app.agent.nodes import attraction, evaluation, gate, hotel, plan, rag, weather
+from backend.app.agent.nodes import (
+    attraction,
+    evaluation,
+    gate,
+    hotel,
+    plan,
+    rag,
+    transport,
+    weather,
+)
 from backend.app.agent.constants import NODE_LABELS, NODE_RETRY_ATTEMPTS
 from backend.app.agent.state import PlannerState, initial_state
 from backend.app.core.database import get_checkpointer
@@ -54,6 +63,7 @@ class TravelPlanAgent:
             "weather_tool_node",
             partial(weather.weather_tool_node, llm=self.llm, tools=tools),
         )
+        workflow.add_node("transport_tool_node", transport.transport_tool_node)
         workflow.add_node(
             "hotel_tool_node",
             partial(hotel.hotel_tool_node, llm=self.llm, tools=tools),
@@ -80,6 +90,7 @@ class TravelPlanAgent:
         workflow.add_edge(START, "attraction_tool_node")
         workflow.add_edge(START, "weather_tool_node")
         workflow.add_edge(START, "rag_info_node")
+        workflow.add_edge(START, "transport_tool_node")
         workflow.add_conditional_edges(
             "rag_info_node",
             gate.rag_attraction_node_router,
@@ -90,6 +101,7 @@ class TravelPlanAgent:
         workflow.add_edge("hotel_tool_node", "hotel_enrich_node")
         workflow.add_edge("hotel_enrich_node", "plan_gate_node")
         workflow.add_edge("weather_tool_node", "plan_gate_node")
+        workflow.add_edge("transport_tool_node", "plan_gate_node")
         workflow.add_conditional_edges(
             "plan_gate_node",
             gate.plan_gate_router,
@@ -211,6 +223,8 @@ class TravelPlanAgent:
             return {"hotel_count": len(output.get("hotel_result") or [])}
         if name == "weather_tool_node":
             return {"weather_count": len(output.get("weather_result") or [])}
+        if name == "transport_tool_node":
+            return {"transport_count": len(output.get("transport_result") or [])}
         if name == "attraction_tool_node":
             return {"new_names": len(output.get("attraction_names") or set())}
         if name == "rag_info_node":

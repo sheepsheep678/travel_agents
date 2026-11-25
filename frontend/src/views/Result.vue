@@ -64,7 +64,10 @@
             <div class="port port-center">
               <span class="port-label">DESTINATION / 目的地</span>
               <b class="port-city">{{ plan.city }}</b>
-              <span class="port-sub">共 {{ days.length }} 天 · {{ totalAttractions }} 处风景</span>
+              <span class="port-sub">
+                共 {{ days.length }} 天 · {{ totalAttractions }} 处风景<template v-if="totalVisitMinutes">
+                  · 游览约 {{ formatHours(totalVisitMinutes) }} 小时</template>
+              </span>
             </div>
             <div class="port port-right">
               <span class="port-label">返程</span>
@@ -90,7 +93,7 @@
               <div><dt>景点</dt><dd>{{ totalAttractions }}</dd></div>
               <div><dt>酒店</dt><dd>{{ totalHotels }}</dd></div>
               <div><dt>用餐</dt><dd>{{ totalMeals }}</dd></div>
-              <div><dt>预算</dt><dd>¥{{ plan.budget?.total ?? 0 }}</dd></div>
+              <div><dt>预算</dt><dd>¥{{ localBudget.total }}</dd></div>
             </dl>
           </div>
         </section>
@@ -142,7 +145,10 @@
               <div class="ticket-track" :style="{ transform: `translateX(-${ticketIndex * 100}%)` }">
                 <article v-for="(t, ti) in trains" :key="ti" class="train-ticket">
                   <div class="tt-top">
-                    <span class="tt-kicker">12306 · 车次票面</span>
+                    <span class="tt-kicker">
+                      {{ t.direction === 'return' ? '返程' : t.direction === 'outbound' ? '去程' : '12306' }}
+                      · 车次票面
+                    </span>
                     <span class="tt-index">{{ String(ti + 1).padStart(2, '0') }} / {{ String(trains.length).padStart(2, '0') }}</span>
                   </div>
                   <div class="tt-main">
@@ -233,7 +239,7 @@
             </div>
             <div class="receipt-total">
               <span>总预算</span>
-              <b>¥ {{ plan.budget?.total ?? 0 }}</b>
+              <b>¥ {{ localBudget.total }}</b>
             </div>
           </div>
         </section>
@@ -274,6 +280,9 @@
                 <b class="stub-no">{{ String(di + 1).padStart(2, '0') }}</b>
                 <span class="stub-date">{{ fmtDate(day.date) }}</span>
                 <span class="stub-week">{{ weekday(day.date) }}</span>
+                <span v-if="dayVisitMinutes(day)" class="stub-week">
+                  游览约 {{ formatHours(dayVisitMinutes(day)) }} 小时
+                </span>
                 <i class="stub-mark">✦</i>
               </aside>
 
@@ -435,13 +444,82 @@ const totalAttractions = computed(() => days.reduce((s, d) => s + d.attractions.
 const totalHotels = computed(() => days.filter((d) => d.hotel).length)
 const totalMeals = computed(() => days.reduce((s, d) => s + d.meals.length, 0))
 
+/** 当日游览时长（分钟），删除景点后实时变化 */
+function dayVisitMinutes(day: DayPlan): number {
+  return day.attractions.reduce((s, a) => s + (a.visit_duration || 0), 0)
+}
+
+const totalVisitMinutes = computed(() => days.reduce((s, d) => s + dayVisitMinutes(d), 0))
+
+/** 分钟转小时，保留一位小数 */
+function formatHours(minutes: number): number {
+  return Math.round((minutes / 60) * 10) / 10
+}
+
+// 原始门票明细与数量：编辑后按比例缩放后端给出的门票预算，避免初始展示跳变
+const originalTicketCost = computed(() =>
+  (plan.value?.days ?? []).reduce(
+    (s, d) => s + d.attractions.reduce((x, a) => x + (a.ticket_price ?? 0), 0),
+    0,
+  ),
+)
+const originalAttractionCount = computed(() =>
+  (plan.value?.days ?? []).reduce((s, d) => s + d.attractions.length, 0),
+)
+const currentTicketCost = computed(() =>
+  days.reduce((s, d) => s + d.attractions.reduce((x, a) => x + (a.ticket_price ?? 0), 0), 0),
+)
+
+/** 本地预算：景点被删除/排序后重新计算门票与总价 */
+const localBudget = computed(() => {
+  const base = plan.value?.budget
+  if (!base) {
+    const attractions = currentTicketCost.value
+    const hotels = days.reduce((s, d) => s + (d.hotel?.estimated_cost ?? 0), 0)
+    const meals = days.reduce(
+      (s, d) => s + d.meals.reduce((x, m) => x + (m.estimated_cost ?? 0), 0),
+      0,
+    )
+    return {
+      total_attractions: attractions,
+      total_hotels: hotels,
+      total_meals: meals,
+      total_transportation: 0,
+      total: attractions + hotels + meals,
+    }
+  }
+  const original = originalTicketCost.value
+  const originalCount = originalAttractionCount.value
+  const ratio =
+    original > 0
+      ? currentTicketCost.value / original
+      : originalCount > 0
+        ? totalAttractions.value / originalCount
+        : 1
+  const attractions = Math.round((base.total_attractions ?? 0) * ratio)
+  const delta = attractions - (base.total_attractions ?? 0)
+  const baseTotal =
+    base.total ||
+    (base.total_attractions ?? 0) +
+      (base.total_hotels ?? 0) +
+      (base.total_meals ?? 0) +
+      (base.total_transportation ?? 0)
+  return {
+    total_attractions: attractions,
+    total_hotels: base.total_hotels ?? 0,
+    total_meals: base.total_meals ?? 0,
+    total_transportation: base.total_transportation ?? 0,
+    total: Math.max(0, baseTotal + delta),
+  }
+})
+
 const budgetItems = computed(() => {
-  const b = plan.value?.budget
+  const b = localBudget.value
   return [
-    { key: 'attractions', label: '景点门票', value: b?.total_attractions ?? 0, icon: '🎫' },
-    { key: 'hotels', label: '酒店住宿', value: b?.total_hotels ?? 0, icon: '🏨' },
-    { key: 'meals', label: '餐饮', value: b?.total_meals ?? 0, icon: '🍜' },
-    { key: 'transport', label: '交通', value: b?.total_transportation ?? 0, icon: '🚕' },
+    { key: 'attractions', label: '景点门票', value: b.total_attractions, icon: '🎫' },
+    { key: 'hotels', label: '酒店住宿', value: b.total_hotels, icon: '🏨' },
+    { key: 'meals', label: '餐饮', value: b.total_meals, icon: '🍜' },
+    { key: 'transport', label: '交通', value: b.total_transportation, icon: '🚕' },
   ]
 })
 
@@ -451,22 +529,44 @@ function mealTypeLabel(t: string): string {
 
 /* ------- 12306 车次票面 ------- */
 const TRAIN_ORIGIN_KEY = 'lvji_train_origin'
-const fromCity = ref('')
-try {
-  fromCity.value = localStorage.getItem(TRAIN_ORIGIN_KEY) || ''
-} catch {
-  /* 隐私模式忽略 */
+const transport = plan.value?.transport ?? null
+const fromCity = ref(transport?.from_city || '')
+if (!fromCity.value) {
+  try {
+    fromCity.value = localStorage.getItem(TRAIN_ORIGIN_KEY) || ''
+  } catch {
+    /* 隐私模式忽略 */
+  }
 }
 const trainDate = ref(plan.value?.start_date || '')
-const trains = ref<TrainTicket[]>([])
+const trains = ref<TrainTicket[]>(transport?.outbound_options ?? [])
 const trainLoading = ref(false)
 const trainError = ref('')
 const ticketIndex = ref(0)
 let trainAbort: AbortController | null = null
 let ticketDragX: number | null = null
 
+// 行程规划阶段已查好的车次按日期缓存，切去/返程时直接复用，避免重复请求
+const plannedTrains: Record<string, TrainTicket[]> = {}
+if (transport) {
+  if (transport.outbound_options?.length) {
+    plannedTrains[plan.value?.start_date || ''] = transport.outbound_options
+  }
+  if (transport.return_options?.length && plan.value?.end_date !== plan.value?.start_date) {
+    plannedTrains[plan.value?.end_date || ''] = transport.return_options
+  }
+}
+
 function pickTrainDate(date: string) {
   trainDate.value = date
+  const local = plannedTrains[date]
+  if (local?.length) {
+    trainAbort?.abort()
+    trains.value = local
+    ticketIndex.value = 0
+    trainError.value = ''
+    return
+  }
   if (fromCity.value.trim()) searchTrains()
 }
 

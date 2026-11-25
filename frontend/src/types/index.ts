@@ -76,6 +76,16 @@ export interface TripPlan {
   weather_info: WeatherInfo[]
   overall_suggestions: string
   budget?: Budget | null
+  transport?: IntercityTransport | null
+}
+
+export interface IntercityTransport {
+  from_city: string
+  to_city: string
+  outbound?: TrainTicket | null
+  return_ticket?: TrainTicket | null
+  outbound_options: TrainTicket[]
+  return_options: TrainTicket[]
 }
 
 export interface TripPlanResponse {
@@ -108,6 +118,8 @@ export interface TrainTicket {
   to_station_telecode?: string
   prices?: TrainSeatPrice[]
   flags?: string[]
+  /** 行程上下文中的方向：outbound / return */
+  direction?: string
 }
 
 export interface TrainSearchResponse {
@@ -121,13 +133,16 @@ export interface TrainSearchResponse {
 
 /** SSE 流式事件（与后端 travel_plan_agent.stream_events 协议一致） */
 export type StreamEvent =
-  | { type: 'node_start'; node: string; label: string }
-  | { type: 'node_end'; node: string; payload: Record<string, unknown> }
-  | { type: 'node_error'; node: string; message: string; retry?: boolean }
-  | { type: 'done'; success: boolean; message: string; data?: TripPlan | null }
+  | { type: 'meta'; record_id: string; seq?: number }
+  | { type: 'node_start'; node: string; label: string; seq?: number }
+  | { type: 'node_end'; node: string; payload: Record<string, unknown>; seq?: number }
+  | { type: 'node_error'; node: string; message: string; retry?: boolean; seq?: number }
+  | { type: 'done'; success: boolean; message: string; data?: TripPlan | null; seq?: number }
 
 export interface TripRequest {
   city: string
+  /** 出发城市，用于查询跨城高铁；留空则不查 */
+  origin_city?: string
   start_date: string
   end_date: string
   travel_days: number
@@ -144,6 +159,7 @@ export interface TripRequest {
 /** 从对话 / 首页跳转到快速开始时的预填表单（字段均可选） */
 export interface TripPrefill {
   city?: string
+  origin_city?: string
   start_date?: string
   end_date?: string
   travel_days?: number

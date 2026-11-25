@@ -4,6 +4,7 @@ NODE_LABELS = {
     "attraction_enrich_node": "正在整合景点数据...",
     "rag_info_node": "正在检索本地知识库...",
     "weather_tool_node": "正在查询天气...",
+    "transport_tool_node": "正在查询跨城车次...",
     "hotel_tool_node": "正在搜索推荐酒店...",
     "hotel_enrich_node": "正在整合酒店数据...",
     "plan_node": "正在生成行程计划...",

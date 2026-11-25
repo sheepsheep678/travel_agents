@@ -99,7 +99,8 @@ PLAN_RETRY_MESSAGES = [
 
 
 def build_plan_prompt(state, date_list, attractions_brief, hotels_brief,
-                      weather_brief, overlap_names, revision_block) -> str:
+                      weather_brief, overlap_names, revision_block,
+                      transport_brief=None) -> str:
     travel_days = state.get("travel_days") or 1
     return f"""你是资深旅行规划师。请根据以下数据为游客制定一份完整的{state['city']}旅行计划。
 
@@ -121,6 +122,9 @@ def build_plan_prompt(state, date_list, attractions_brief, hotels_brief,
 
 天气数据:
 {json.dumps(weather_brief, ensure_ascii=False)}
+
+跨城交通候选(12306 实时，仅用于安排首日到达/末日返程节奏；不要输出车次号、时刻或票价，系统会自动回填):
+{json.dumps(transport_brief or {"outbound": [], "return": []}, ensure_ascii=False)}
 
 本地知识库推荐攻略:
 {state['rag_result']}
@@ -145,6 +149,8 @@ def build_plan_prompt(state, date_list, attractions_brief, hotels_brief,
 11.本地知识库推荐攻略是精心查找的必玩攻略，大部分都是城市的特色，但是可以根据用户偏好自行取舍
 12.不要安排过多的相似特征的景点，用户会审美疲劳；尽量多样化，确保行程丰富有趣
 13.如处于修订模式，必须优先解决评估反馈中指出的全部问题
+14.若提供了跨城交通：第1天按去程到达时间安排节奏，最后一天按返程出发时间预留赶车时间；
+   禁止在 description 中编造车次号、时刻或票价，交通详情由系统自动回填
 
 
 day_routes 要求(共{travel_days}条，与每天一一对应):

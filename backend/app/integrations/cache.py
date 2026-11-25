@@ -135,6 +135,16 @@ async def cache_set_json(key: str, value: Any, ttl: Optional[int] = None) -> Non
         logger.debug("写入缓存失败", key=key, error=str(exc))
 
 
+async def cache_delete(key: str) -> None:
+    """删除单个缓存键；Redis 出错时静默跳过。"""
+    if _client is None:
+        return
+    try:
+        await _client.delete(key)
+    except Exception as exc:
+        logger.debug("删除缓存失败", key=key, error=str(exc))
+
+
 def _cacheable(value: Any) -> Any:
     """把工具返回值转成可 JSON 序列化的结构；失败返回 None。"""
     try:

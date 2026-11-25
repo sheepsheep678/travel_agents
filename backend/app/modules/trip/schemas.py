@@ -12,6 +12,9 @@ class TripRequest(BaseModel):
     """旅行规划请求。"""
 
     city: str = Field(..., description="目的地城市", examples=["北京"])
+    origin_city: Optional[str] = Field(
+        default="", description="出发城市，用于查询跨城高铁；留空则不查"
+    )
     start_date: str = Field(..., description="开始日期 YYYY-MM-DD", examples=["2025-06-01"])
     end_date: str = Field(..., description="结束日期 YYYY-MM-DD", examples=["2025-06-03"])
     travel_days: int = Field(..., description="旅行天数", ge=1, le=30, examples=[3])
@@ -44,6 +47,21 @@ class TripRequest(BaseModel):
             }
         }
     }
+
+
+class TripResumeRequest(BaseModel):
+    """断线续传：按规划记录重发未收到的事件。"""
+
+    record_id: str = Field(..., min_length=1, description="行程规划记录 ID")
+    user_id: Optional[str] = Field(default="", description="用户 ID，用于校验归属")
+    after: int = Field(default=-1, description="已收到的最后一个事件序号，-1 表示从头")
+
+
+class TripCancelRequest(BaseModel):
+    """取消正在后台执行的行程规划。"""
+
+    record_id: str = Field(..., min_length=1, description="行程规划记录 ID")
+    user_id: Optional[str] = Field(default="", description="用户 ID，用于校验归属")
 
 
 class POISearchRequest(BaseModel):
@@ -151,6 +169,21 @@ class WeatherInfo(BaseModel):
         return v
 
 
+class IntercityTransport(BaseModel):
+    """跨城交通：去程/返程推荐车次及候选列表。"""
+
+    from_city: str = Field(default="", description="出发城市")
+    to_city: str = Field(default="", description="目的地城市")
+    outbound: Optional["TrainTicket"] = Field(default=None, description="推荐去程车次")
+    return_ticket: Optional["TrainTicket"] = Field(default=None, description="推荐返程车次")
+    outbound_options: List["TrainTicket"] = Field(
+        default_factory=list, description="去程候选车次"
+    )
+    return_options: List["TrainTicket"] = Field(
+        default_factory=list, description="返程候选车次"
+    )
+
+
 class Budget(BaseModel):
     """预算信息。"""
 
@@ -171,6 +204,9 @@ class TripPlan(BaseModel):
     weather_info: List[WeatherInfo] = Field(default_factory=list, description="天气信息")
     overall_suggestions: str = Field(..., description="总体建议")
     budget: Optional[Budget] = Field(default=None, description="预算信息")
+    transport: Optional[IntercityTransport] = Field(
+        default=None, description="跨城交通（去程/返程车次）"
+    )
 
 
 class TripPlanResponse(BaseModel):
@@ -207,6 +243,7 @@ class TrainTicket(BaseModel):
     to_station_telecode: str = Field(default="", description="到达站电报码")
     prices: List[TrainSeatPrice] = Field(default_factory=list, description="坐席票价与余票")
     flags: List[str] = Field(default_factory=list, description="复兴号 / 智能动车等标签")
+    direction: str = Field(default="", description="行程上下文中的方向：outbound/return")
 
 
 class TrainSearchResponse(BaseModel):
@@ -270,3 +307,8 @@ class ErrorResponse(BaseModel):
     success: bool = Field(default=False, description="是否成功")
     message: str = Field(..., description="错误消息")
     error_code: Optional[str] = Field(default=None, description="错误代码")
+
+
+# IntercityTransport 引用了后定义的 TrainTicket，模块加载完成后解析前向引用
+IntercityTransport.model_rebuild()
+TripPlan.model_rebuild()

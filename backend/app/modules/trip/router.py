@@ -10,8 +10,10 @@ from sse_starlette.sse import EventSourceResponse
 from backend.app.core.deps import get_trip_service
 from backend.app.modules.trip.schemas import (
     TrainSearchResponse,
+    TripCancelRequest,
     TripPlanResponse,
     TripRequest,
+    TripResumeRequest,
 )
 from backend.app.modules.trip.service import TripService
 
@@ -52,7 +54,8 @@ async def generate_trip_plan_stream(
     """生成旅行计划并实时推送节点进度。
 
     事件协议见 ``agent.graph.TravelPlanAgent.stream_events``；
-    客户端断开时 sse-starlette 会取消生成器，从而停止图执行。
+    图在后台任务中执行，客户端断开只会停止订阅，不会中断规划；
+    重连时调用 ``POST /trip/plan/resume`` 按 record_id 补发未收到的事件。
     """
     # 在响应开始前完成会话校验，校验失败会走全局异常处理器返回 JSON 错误
     state, config, record = await service.prepare(req)
@@ -69,3 +72,37 @@ async def generate_trip_plan_stream(
             "X-Accel-Buffering": "no",
         },
     )
+
+
+@router.post("/plan/resume", summary="断线续传行程进度（SSE）")
+async def resume_trip_plan_stream(
+    req: TripResumeRequest,
+    service: TripService = Depends(get_trip_service),
+):
+    """按 record_id 重放未收到的事件；后台任务不会因客户端断开而停止。"""
+    await service.assert_record(req.record_id, req.user_id or "")
+
+    async def event_source():
+        async for event in service.resume(
+            req.record_id, req.user_id or "", req.after
+        ):
+            yield {"data": json.dumps(event, ensure_ascii=False)}
+
+    return EventSourceResponse(
+        event_source(),
+        ping=10,
+        headers={
+            "Cache-Control": "no-cache",
+            "X-Accel-Buffering": "no",
+        },
+    )
+
+
+@router.post("/plan/cancel", summary="取消行程规划")
+async def cancel_trip_plan(
+    req: TripCancelRequest,
+    service: TripService = Depends(get_trip_service),
+):
+    """用户主动停止：终止后台图执行并记录 cancelled 状态。"""
+    await service.cancel(req.record_id, req.user_id or "")
+    return {"success": True, "message": "已取消"}

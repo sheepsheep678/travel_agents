@@ -9,6 +9,15 @@
       <a-range-picker v-model:value="dates" format="YYYY-MM-DD" :allow-clear="false" style="width: 100%" />
     </a-form-item>
 
+    <a-form-item label="出发城市（选填，用于查询跨城高铁）" name="originCity">
+      <a-auto-complete
+        v-model:value="originCity"
+        :options="originOptions"
+        placeholder="如：北京；留空则不查车次"
+        style="width: 100%"
+      />
+    </a-form-item>
+
     <div class="sb-grid">
       <a-form-item label="旅行天数" name="travelDays">
         <a-input-number v-model:value="travelDays" :min="1" :max="30" style="width: 100%" />
@@ -66,6 +75,7 @@ defineProps<{ city: string }>()
 const emit = defineEmits<{ submit: [] }>()
 
 const dates = defineModel<[Dayjs, Dayjs] | null>('dates', { required: true })
+const originCity = defineModel<string>('originCity', { default: '' })
 const travelDays = defineModel<number>('travelDays', { required: true })
 const transportation = defineModel<string>('transportation', { required: true })
 const accommodation = defineModel<string>('accommodation', { required: true })
@@ -73,6 +83,9 @@ const preferences = defineModel<string[]>('preferences', { required: true })
 const freeTextInput = defineModel<string>('freeTextInput', { required: true })
 
 const transportationOptions = ['公共交通', '自驾', '包车', '骑行', '高铁', '飞机'].map((v) => ({ value: v }))
+const originOptions = ['北京', '上海', '广州', '深圳', '杭州', '成都', '武汉', '西安', '南京', '重庆'].map(
+  (v) => ({ value: v }),
+)
 const accommodationOptions = ['经济型酒店', '舒适型酒店', '豪华酒店', '民宿', '青年旅舍'].map((v) => ({ value: v }))
 const preferenceOptions = [
   '历史文化', '自然风光', '美食', '休闲度假', '亲子', '购物', '夜生活',

@@ -87,14 +87,16 @@ import KnowledgeDrawer from '../components/chat/KnowledgeDrawer.vue'
 import { usePaperTheme } from '../composables/usePaperTheme'
 import { chatStore, getUserId, toChatSession, tripStore } from '../store'
 import {
+  cancelChat,
   createSession,
   deleteSession,
   getSession,
   listSessions,
+  resumeChat,
   streamChat,
 } from '../services/api'
 import { sketchbookCities } from '../data/sketchbookCities'
-import type { ChatMessage, ChatSession } from '../types'
+import type { ChatMessage, ChatSession, ChatStreamEvent } from '../types'
 
 usePaperTheme()
 
@@ -120,6 +122,8 @@ const scrollEl = ref<HTMLElement>()
 const showJump = ref(false)
 let abortCtrl: AbortController | null = null
 let stickToBottom = true
+// 只有用户显式点「停止」才要求后端取消；断线/离页只停止本地接收
+let stopRequested = false
 
 const activeSession = computed(
   () => chatStore.sessions.find((s) => s.id === chatStore.activeId) ?? null,
@@ -160,11 +164,18 @@ function lastUserContent(): string {
 }
 
 function stop() {
+  // 停止按钮：连同后台生成一起取消
+  stopRequested = true
+  abortCtrl?.abort()
+}
+
+function abortStream() {
   abortCtrl?.abort()
 }
 
 function stopIfStreaming() {
-  if (chatStore.streaming) stop()
+  // 新建/切换会话只停止本地接收，后台生成继续；切回来可从历史获取完整回复
+  if (chatStore.streaming) abortStream()
 }
 
 function openKnowledge() {
@@ -246,7 +257,11 @@ async function selectSession(id: string) {
 }
 
 async function removeSession(id: string) {
-  if (id === chatStore.activeId) stopIfStreaming()
+  if (id === chatStore.activeId) {
+    stopIfStreaming()
+    // 会话即将删除，后台生成已无归属，显式取消
+    cancelChat({ userId, sessionId: id }).catch(() => {})
+  }
   try {
     await deleteSession(id, userId)
   } catch (e: any) {
@@ -268,6 +283,64 @@ async function ensureActiveSession(): Promise<ChatSession | null> {
   return activeSession.value
 }
 
+function applyChatEvent(
+  ev: ChatStreamEvent,
+  msg: ChatMessage,
+  session: ChatSession,
+): boolean {
+  if (ev.type === 'token') {
+    msg.content += ev.delta
+    session.updatedAt = Date.now()
+    return false
+  }
+  if (ev.type === 'error') {
+    msg.status = 'error'
+    msg.error = ev.message
+    return true
+  }
+  if (ev.session_id && ev.session_id !== session.id) {
+    // 理论上不会发生；保持本地状态与服务端一致
+    session.id = ev.session_id
+    chatStore.activeId = ev.session_id
+  }
+  msg.status = 'done'
+  return true
+}
+
+async function pumpChat(
+  events: AsyncIterable<ChatStreamEvent>,
+  msg: ChatMessage,
+  session: ChatSession,
+): Promise<boolean> {
+  for await (const ev of events) {
+    const finished = applyChatEvent(ev, msg, session)
+    if (ev.type === 'token') {
+      await nextTick()
+      scrollToBottom()
+    }
+    if (finished) return true
+  }
+  return false
+}
+
+function settleAborted(msg: ChatMessage) {
+  if (!msg.content) {
+    const i = chatStore.messages.findIndex((m) => m.id === msg.id)
+    if (i >= 0) chatStore.messages.splice(i, 1)
+  } else {
+    msg.status = 'stopped'
+  }
+}
+
+function handleAbort(msg: ChatMessage, session: ChatSession) {
+  // 显式停止才取消后台；网络断开、刷新、路由卸载时让生成继续，重连可续传
+  if (stopRequested) {
+    cancelChat({ userId, sessionId: session.id }).catch(() => {})
+  }
+  stopRequested = false
+  settleAborted(msg)
+}
+
 async function runAssistant(
   session: ChatSession,
   userText: string,
@@ -284,53 +357,59 @@ async function runAssistant(
   const msg = chatStore.messages[chatStore.messages.length - 1]
   session.updatedAt = Date.now()
   chatStore.streaming = true
+  stopRequested = false
   const ctrl = new AbortController()
   abortCtrl = ctrl
   stickToBottom = true
 
   try {
-    for await (const ev of streamChat(
-      {
-        user_id: userId,
-        session_id: session.id,
-        message: userText,
-        city: sessionCity.value || undefined,
-        regenerate,
-      },
-      ctrl.signal,
-    )) {
-      if (ev.type === 'token') {
-        msg.content += ev.delta
-        session.updatedAt = Date.now()
-        await nextTick()
-        scrollToBottom()
-      } else if (ev.type === 'error') {
-        msg.status = 'error'
-        msg.error = ev.message
-        break
-      } else {
-        if (ev.session_id && ev.session_id !== session.id) {
-          // 理论上不会发生；保持本地状态与服务端一致
-          session.id = ev.session_id
-          chatStore.activeId = ev.session_id
+    let finished = false
+    try {
+      finished = await pumpChat(
+        streamChat(
+          {
+            user_id: userId,
+            session_id: session.id,
+            message: userText,
+            city: sessionCity.value || undefined,
+            regenerate,
+          },
+          ctrl.signal,
+        ),
+        msg,
+        session,
+      )
+    } catch (e: any) {
+      if (e?.name === 'AbortError') {
+        handleAbort(msg, session)
+        return
+      }
+      // 连接中断：转到下方续传
+    }
+
+    // 断线续传：按已收到字符数补发，后台生成不会因连接断开而丢失
+    if (!finished) {
+      try {
+        finished = await pumpChat(
+          resumeChat(
+            // 按 Unicode 码点计数，与后端 Python len() 保持一致
+            { userId, sessionId: session.id, offset: [...msg.content].length },
+            ctrl.signal,
+          ),
+          msg,
+          session,
+        )
+      } catch (e: any) {
+        if (e?.name === 'AbortError') {
+          handleAbort(msg, session)
+          return
         }
-        msg.status = 'done'
-        break
+        msg.status = 'error'
+        msg.error = e?.message || '网络异常，请稍后重试'
+        return
       }
     }
     if (msg.status === 'streaming') msg.status = 'done'
-  } catch (e: any) {
-    if (e?.name === 'AbortError') {
-      if (!msg.content) {
-        const i = chatStore.messages.findIndex((m) => m.id === msg.id)
-        if (i >= 0) chatStore.messages.splice(i, 1)
-      } else {
-        msg.status = 'stopped'
-      }
-    } else {
-      msg.status = 'error'
-      msg.error = e?.message || '网络异常，请稍后重试'
-    }
   } finally {
     if (abortCtrl === ctrl) abortCtrl = null
     chatStore.streaming = false

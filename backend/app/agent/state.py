@@ -1,6 +1,13 @@
 from typing import TypedDict, List, Optional, Annotated, Any
 
-from backend.app.modules.trip.schemas import Attraction, WeatherInfo, Hotel, ErrorResponse, TripPlan
+from backend.app.modules.trip.schemas import (
+    Attraction,
+    ErrorResponse,
+    Hotel,
+    TrainTicket,
+    TripPlan,
+    WeatherInfo,
+)
 
 
 def _add_list(existing: Optional[List[Any]], new: Optional[List[Any]]) -> List[Any]:
@@ -16,6 +23,7 @@ def _add_set(existing: Optional[set], new: Optional[set]) -> set:
 # 图的状态
 class PlannerState(TypedDict):
     city: str
+    origin_city: str
     user_id: str
     session_id: str
     start_date: str
@@ -34,6 +42,7 @@ class PlannerState(TypedDict):
     hotels_raw: str
     hotel_result: Annotated[List[Hotel], _add_list]
     hotel_round: int
+    transport_result: Annotated[List[TrainTicket], _add_list]
     final_plan: Optional[TripPlan]
     history_plan: Annotated[List[TripPlan], _add_list]
     eval_round: int
@@ -50,6 +59,7 @@ def initial_state() -> dict:
     """构建 PlannerState 的初始字典（各节点填充/消费前先置默认值）"""
     return {
         "city": "",
+        "origin_city": "",
         "user_id": "",
         "session_id": "",
         "start_date": "",
@@ -68,6 +78,7 @@ def initial_state() -> dict:
         "hotels_raw": "",
         "hotel_result": [],
         "hotel_round": 0,
+        "transport_result": [],
         "final_plan": None,
         "history_plan": [],
         "eval_round": 0,

@@ -4,7 +4,16 @@ from typing import List, Optional
 
 from pydantic import BaseModel, Field
 
-from backend.app.modules.trip.schemas import Budget, DayPlan, ErrorResponse, Meal, TripPlan, WeatherInfo
+from backend.app.modules.trip.schemas import (
+    Budget,
+    DayPlan,
+    ErrorResponse,
+    IntercityTransport,
+    Meal,
+    TrainTicket,
+    TripPlan,
+    WeatherInfo,
+)
 from backend.app.agent.state import PlannerState
 from backend.app.agent.prompts import PLAN_SYSTEM, PLAN_RETRY_MESSAGES, build_plan_prompt
 from backend.app.agent.nodes.utils import build_date_list
@@ -43,6 +52,64 @@ def _plan_unusable(p: PlannerOutput, travel_days: int) -> bool:
     return not p.days or len(p.days) != travel_days
 
 
+def _ticket_brief(ticket: TrainTicket) -> dict:
+    """车次精简信息：只给 LLM 安排首末天节奏，不含可幻觉的详情。"""
+    prices = [p.price for p in ticket.prices if p.price]
+    return {
+        "train_code": ticket.train_code,
+        "start_time": ticket.start_time,
+        "arrive_time": ticket.arrive_time,
+        "from_station": ticket.from_station,
+        "to_station": ticket.to_station,
+        "duration": ticket.duration,
+        "min_price": min(prices) if prices else None,
+    }
+
+
+def _dedupe_tickets(tickets: list[TrainTicket]) -> list[TrainTicket]:
+    """补搜/重试可能叠加重复车次，按车次+日期+时间去重。"""
+    seen: set[tuple] = set()
+    unique: list[TrainTicket] = []
+    for ticket in tickets:
+        key = (ticket.direction, ticket.train_code, ticket.start_date, ticket.start_time)
+        if key in seen:
+            continue
+        seen.add(key)
+        unique.append(ticket)
+    return unique
+
+
+def _pick_outbound(tickets: list[TrainTicket]) -> Optional[TrainTicket]:
+    """去程选到达时间最早的一班，便于首日安排景点。"""
+    if not tickets:
+        return None
+    return min(tickets, key=lambda t: (t.arrive_time or t.start_time or "99:99"))
+
+
+def _pick_return(tickets: list[TrainTicket]) -> Optional[TrainTicket]:
+    """返程选出发时间最晚的一班，给末日留出游玩时间。"""
+    if not tickets:
+        return None
+    return max(tickets, key=lambda t: (t.start_time or ""))
+
+
+def _build_transport(state: PlannerState) -> Optional[IntercityTransport]:
+    """从 state 确定性回填跨城交通，LLM 不参与车次详情生成。"""
+    tickets = _dedupe_tickets(list(state.get("transport_result") or []))
+    outbound = [t for t in tickets if t.direction == "outbound"]
+    return_tickets = [t for t in tickets if t.direction == "return"]
+    if not outbound and not return_tickets:
+        return None
+    return IntercityTransport(
+        from_city=state.get("origin_city") or "",
+        to_city=state.get("city") or "",
+        outbound=_pick_outbound(outbound),
+        return_ticket=_pick_return(return_tickets),
+        outbound_options=outbound[:5],
+        return_options=return_tickets[:5],
+    )
+
+
 # 规划节点：汇总全部数据，LLM生成完整旅行计划及每日路线起终点
 async def plan_node(state: PlannerState, llm, tools) -> dict:
     attractions = state.get("attractions_result", [])
@@ -74,6 +141,17 @@ async def plan_node(state: PlannerState, llm, tools) -> dict:
     ]
     weather_brief = [w.model_dump() for w in weather_list]
 
+    # 跨城交通只给精简信息，车次详情由系统回填，避免 LLM 编造时刻或票价
+    transport = _build_transport(state)
+    transport_brief = {
+        "outbound": [
+            _ticket_brief(t) for t in (transport.outbound_options if transport else [])
+        ],
+        "return": [
+            _ticket_brief(t) for t in (transport.return_options if transport else [])
+        ],
+    }
+
     # 双源重复检查：既被工具搜到、又被知识库推荐的景点（最高优先级）
     tool_names = {a.name for a in attractions if a.location is not None}
     rag_names = {n.strip() for n in (state.get("rag_attraction_names") or set()) if n and n.strip()}
@@ -104,7 +182,7 @@ async def plan_node(state: PlannerState, llm, tools) -> dict:
 
     plan_prompt = build_plan_prompt(
         state, date_list, attractions_brief, hotels_brief, weather_brief,
-        overlap_names, revision_block,
+        overlap_names, revision_block, transport_brief,
     )
 
     logger.info("[规划Agent] LLM生成旅行计划框架中...")
@@ -190,6 +268,7 @@ async def plan_node(state: PlannerState, llm, tools) -> dict:
         weather_info=final_weather,
         overall_suggestions=result.overall_suggestions,
         budget=result.budget,
+        transport=transport,
     )
 
     logger.info("[规划Agent] 完成，共 %d 天行程，天气 %d 天", len(plan.days), len(final_weather))

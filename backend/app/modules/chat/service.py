@@ -10,7 +10,9 @@ from __future__ import annotations
 
 import asyncio
 import json
-from typing import Any, AsyncIterator
+import time
+from dataclasses import dataclass, field
+from typing import Any, AsyncIterator, Optional
 
 from langchain_core.messages import HumanMessage, RemoveMessage
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -25,6 +27,7 @@ from backend.app.core.exceptions import (
 from backend.app.core.llm_errors import format_llm_error, llm_error_kind
 from backend.app.core.logging import get_logger
 from backend.app.modules.chat.agent import chat_config, get_chat_agent
+from backend.app.modules.chat.history import ChatHistory
 from backend.app.modules.chat.schemas import ChatRequest
 from backend.app.modules.sessions.models import ChatSession
 from backend.app.modules.sessions.repository import SessionRepository
@@ -35,6 +38,32 @@ logger = get_logger(__name__)
 
 def _sse(payload: dict) -> dict:
     return {"data": json.dumps(payload, ensure_ascii=False)}
+
+
+@dataclass
+class ChatRun:
+    """一次对话生成的实时文本缓冲，供断线重连按字符偏移补发。"""
+
+    session_id: str
+    user_id: str = ""
+    text: str = ""
+    done: bool = False
+    cancelled: bool = False
+    error: str = ""
+    task: Optional[asyncio.Task] = None
+    created_at: float = field(default_factory=time.time)
+
+
+_CHAT_RUNS: dict[str, ChatRun] = {}
+_CHAT_RUN_TTL_SECONDS = 600
+
+
+def _prune_chat_runs() -> None:
+    """清理已结束且超过 TTL 的对话缓冲。"""
+    now = time.time()
+    for key, run in list(_CHAT_RUNS.items()):
+        if run.done and now - run.created_at > _CHAT_RUN_TTL_SECONDS:
+            _CHAT_RUNS.pop(key, None)
 
 
 class ChatService:
@@ -95,6 +124,8 @@ class ChatService:
             )
 
         await self.sessions.commit()
+        # 新消息/重新生成已写入 checkpointer，历史缓存必须失效
+        await ChatHistory.ainvalidate(session.id)
         return session, agent, config
 
     @staticmethod
@@ -128,44 +159,124 @@ class ChatService:
                 config, {"messages": remove}, as_node="safety"
             )
 
+    async def check_session(self, user_id: str, session_id: str) -> ChatSession:
+        """校验会话归属，供 SSE 响应开始前调用。"""
+        session = await self.sessions.get_session_for_user(session_id, user_id)
+        if session is None:
+            raise NotFoundError("会话不存在或不属于当前用户")
+        return session
+
     async def stream(
         self,
         session: ChatSession,
         agent: Any,
         config: dict,
     ) -> AsyncIterator[dict]:
-        """运行对话工作流，把节点写入的 token 以 SSE 推给前端。"""
+        """首次订阅：后台生成并实时推送 token；连接断开不影响生成完成。"""
+        run = self._start_run(session, agent, config)
+        async for event in self._subscribe(run, 0):
+            yield _sse(event)
+
+    def _start_run(self, session: ChatSession, agent: Any, config: dict) -> ChatRun:
+        """创建后台生成任务；同一会话残留的旧任务先取消。"""
+        _prune_chat_runs()
+        previous = _CHAT_RUNS.get(session.id)
+        if previous is not None and not previous.done:
+            logger.info("取消上一轮未完成的对话生成", session_id=session.id)
+            previous.cancelled = True
+            if previous.task is not None and not previous.task.done():
+                previous.task.cancel()
+        run = ChatRun(session_id=session.id, user_id=session.user_id or "")
+        _CHAT_RUNS[session.id] = run
+        run.task = asyncio.create_task(self._execute(session, agent, config, run))
+        return run
+
+    async def _execute(
+        self,
+        session: ChatSession,
+        agent: Any,
+        config: dict,
+        run: ChatRun,
+    ) -> None:
+        """后台运行对话工作流，把用户可见 token 累积到缓冲区。"""
         try:
             async with asyncio.timeout(settings.chat.response_timeout):
-                # 工作流节点通过 get_stream_writer() 只推送面向用户的文本，
-                # 意图识别 / 安全围栏等内部调用的 token 不会泄露给前端。
+                # 节点通过 get_stream_writer() 只推送面向用户的文本
                 async for chunk in agent.astream(
                     {"messages": []},
                     config,
                     stream_mode="custom",
                 ):
+                    if run.cancelled:
+                        break
                     if not isinstance(chunk, dict):
                         continue
                     if chunk.get("type") == "token" and chunk.get("delta"):
-                        yield _sse({"type": "token", "delta": chunk["delta"]})
-
-            yield _sse({"type": "done", "session_id": session.id})
+                        run.text += chunk["delta"]
         except asyncio.CancelledError:
-            # 用户消息在 prepare 中已写入 checkpointer；
-            # 未完成的助手节点不会产生半截快照，直接结束即可。
-            logger.info("对话流被取消", session_id=session.id)
+            requested = run.cancelled
+            run.cancelled = True
+            # requested=False 表示不是 /chat/cancel 或新请求替换，而是外部强制取消
+            logger.info(
+                "对话后台生成被取消",
+                session_id=session.id,
+                requested=requested,
+            )
             raise
         except Exception as exc:
             kind = llm_error_kind(exc)
-            message = format_llm_error(exc)
+            run.error = format_llm_error(exc)
             if kind:
-                # 欠费/未开通/Key 失效属于上游账户问题，不打完整堆栈
                 logger.warning(
                     "对话流式生成失败（上游账户/权限问题）",
                     session_id=session.id,
                     kind=kind,
-                    error=message,
+                    error=run.error,
                 )
             else:
                 logger.exception("对话流式生成失败", session_id=session.id)
-            yield _sse({"type": "error", "message": message})
+        finally:
+            # 助手消息已随节点执行写入 checkpointer，刷新历史时不能读到旧缓存
+            run.done = True
+            try:
+                await asyncio.shield(ChatHistory.ainvalidate(session.id))
+            except BaseException:
+                pass
+
+    async def _subscribe(self, run: ChatRun, offset: int) -> AsyncIterator[dict]:
+        """从 offset 之后补发文本，并持续推送新 token 直到生成结束。"""
+        sent = max(0, offset)
+        while True:
+            if len(run.text) > sent:
+                yield {"type": "token", "delta": run.text[sent:]}
+                sent = len(run.text)
+            if run.done:
+                if run.error:
+                    yield {"type": "error", "message": run.error}
+                else:
+                    yield {"type": "done", "session_id": run.session_id}
+                return
+            await asyncio.sleep(0.05)
+
+    async def resume(
+        self, user_id: str, session_id: str, offset: int = 0
+    ) -> AsyncIterator[dict]:
+        """断线重连：校验会话后补发已生成但客户端未收到的 token。"""
+        await self.check_session(user_id, session_id)
+        run = _CHAT_RUNS.get(session_id)
+        if run is None:
+            yield {"type": "done", "session_id": session_id}
+            return
+        async for event in self._subscribe(run, offset):
+            yield event
+
+    async def cancel(self, user_id: str, session_id: str) -> None:
+        """用户主动停止：终止后台生成，保留已生成的部分文本。"""
+        await self.check_session(user_id, session_id)
+        run = _CHAT_RUNS.get(session_id)
+        if run is None or run.done:
+            return
+        logger.info("收到用户取消对话生成", session_id=session_id)
+        run.cancelled = True
+        if run.task is not None and not run.task.done():
+            run.task.cancel()

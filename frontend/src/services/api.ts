@@ -204,3 +204,43 @@ export function streamTripPlan(req: TripRequest, signal?: AbortSignal): AsyncGen
 export function streamChat(req: ChatRequest, signal?: AbortSignal): AsyncGenerator<ChatStreamEvent> {
   return streamSSE<ChatStreamEvent>(`${API_BASE}/chat/stream`, req, signal)
 }
+
+/** 断线续传：补发已生成但客户端未收到的 token。 */
+export function resumeChat(
+  params: { userId: string; sessionId: string; offset: number },
+  signal?: AbortSignal,
+): AsyncGenerator<ChatStreamEvent> {
+  return streamSSE<ChatStreamEvent>(
+    `${API_BASE}/chat/resume`,
+    { user_id: params.userId, session_id: params.sessionId, offset: params.offset },
+    signal,
+  )
+}
+
+/** 取消正在后台生成的对话回复。 */
+export async function cancelChat(params: { userId: string; sessionId: string }): Promise<void> {
+  await http.post('/chat/cancel', {
+    user_id: params.userId,
+    session_id: params.sessionId,
+  })
+}
+
+/** 断线续传：按 record_id 补发未收到的行程节点事件。 */
+export function resumeTripPlan(
+  params: { recordId: string; userId: string; after: number },
+  signal?: AbortSignal,
+): AsyncGenerator<StreamEvent> {
+  return streamSSE<StreamEvent>(
+    `${API_BASE}/trip/plan/resume`,
+    { record_id: params.recordId, user_id: params.userId, after: params.after },
+    signal,
+  )
+}
+
+/** 取消正在后台执行的行程规划。 */
+export async function cancelTripPlan(params: { recordId: string; userId: string }): Promise<void> {
+  await http.post('/trip/plan/cancel', {
+    record_id: params.recordId,
+    user_id: params.userId,
+  })
+}

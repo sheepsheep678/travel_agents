@@ -15,6 +15,7 @@
         <SketchbookForm
           v-if="!generating"
           :city="form.city"
+          v-model:origin-city="form.origin_city"
           v-model:dates="form.dates"
           v-model:travel-days="form.travel_days"
           v-model:transportation="form.transportation"
@@ -48,7 +49,12 @@ import SketchbookBook from '../components/sketchbook/SketchbookBook.vue'
 import SketchbookForm from '../components/sketchbook/SketchbookForm.vue'
 import SketchbookProgress from '../components/sketchbook/SketchbookProgress.vue'
 import { sketchbookCities } from '../data/sketchbookCities'
-import { ensureSession, streamTripPlan } from '../services/api'
+import {
+  cancelTripPlan,
+  ensureSession,
+  resumeTripPlan,
+  streamTripPlan,
+} from '../services/api'
 import { chatStore, getUserId, toChatSession, tripStore } from '../store'
 import { usePaperTheme } from '../composables/usePaperTheme'
 import type { ServerSession, TripRequest, StreamEvent } from '../types'
@@ -60,8 +66,17 @@ const route = useRoute()
 const cities = sketchbookCities
 const activeIndex = ref(0)
 
+function savedOrigin(): string {
+  try {
+    return localStorage.getItem('lvji_train_origin') || ''
+  } catch {
+    return ''
+  }
+}
+
 const form = reactive<{
   city: string
+  origin_city: string
   dates: [Dayjs, Dayjs] | null
   travel_days: number
   transportation: string
@@ -70,6 +85,7 @@ const form = reactive<{
   free_text_input: string
 }>({
   city: cities[0].name,
+  origin_city: savedOrigin(),
   dates: [dayjs().add(1, 'day'), dayjs().add(3, 'day')],
   travel_days: 3,
   transportation: '公共交通',
@@ -88,7 +104,7 @@ watch(activeIndex, (i) => {
 
 /* ------- 进度状态（由后端 SSE 流事件驱动） ------- */
 const steps = [
-  { icon: '🔍', label: '搜索景点', nodes: ['attraction_tool_node', 'attraction_enrich_node', 'rag_info_node'] },
+  { icon: '🔍', label: '搜索景点', nodes: ['attraction_tool_node', 'attraction_enrich_node', 'rag_info_node', 'transport_tool_node'] },
   { icon: '🌤️', label: '查询天气', nodes: ['weather_tool_node'] },
   { icon: '🏨', label: '推荐酒店', nodes: ['hotel_tool_node', 'hotel_enrich_node'] },
   { icon: '📋', label: '生成计划', nodes: ['plan_node'] },
@@ -99,6 +115,7 @@ const nodeStep: Record<string, number> = {
   attraction_tool_node: 0,
   rag_info_node: 0,
   attraction_enrich_node: 0,
+  transport_tool_node: 0,
   weather_tool_node: 1,
   hotel_tool_node: 2,
   hotel_enrich_node: 2,
@@ -109,6 +126,7 @@ const nodeStep: Record<string, number> = {
 const nodeMilestones: { node: string; pct: number }[] = [
   { node: 'attraction_tool_node', pct: 10 },
   { node: 'rag_info_node', pct: 25 },
+  { node: 'transport_tool_node', pct: 30 },
   { node: 'weather_tool_node', pct: 35 },
   { node: 'attraction_enrich_node', pct: 50 },
   { node: 'hotel_tool_node', pct: 65 },
@@ -120,6 +138,7 @@ const nodeLabels: Record<string, string> = {
   attraction_tool_node: '正在搜索景点…',
   attraction_enrich_node: '正在整合景点数据…',
   rag_info_node: '正在检索本地知识库…',
+  transport_tool_node: '正在查询跨城车次…',
   weather_tool_node: '正在查询天气…',
   hotel_tool_node: '正在搜索推荐酒店…',
   hotel_enrich_node: '正在整合酒店数据…',
@@ -140,6 +159,9 @@ const nodeDone = new Set<string>()
 let reachedStep = -1
 let abortCtrl: AbortController | null = null
 let redirectTimer: number | undefined
+// 断线续传：记录本次规划记录与已收到的最后一个事件序号
+let activeRecordId = ''
+let lastSeq = -1
 
 const activeStep = computed(() => {
   const node = progress.currentNode
@@ -153,7 +175,13 @@ function pushLog(level: 'info' | 'warn' | 'success', text: string) {
 }
 
 function onStreamEvent(ev: StreamEvent) {
+  if (typeof (ev as { seq?: number }).seq === 'number') {
+    lastSeq = (ev as { seq: number }).seq
+  }
   switch (ev.type) {
+    case 'meta':
+      activeRecordId = ev.record_id
+      break
     case 'node_start': {
       const step = nodeStep[ev.node] ?? -1
       // 已进入更靠后的阶段时，忽略前面阶段的事件，避免进度回退
@@ -212,6 +240,7 @@ async function onSubmit() {
 
   const req: TripRequest = {
     city: form.city,
+    origin_city: form.origin_city.trim(),
     start_date: form.dates[0].format('YYYY-MM-DD'),
     end_date: form.dates[1].format('YYYY-MM-DD'),
     travel_days: form.travel_days,
@@ -232,37 +261,74 @@ async function onSubmit() {
   nodeDone.clear()
   reachedStep = -1
   logs.value = []
-  abortCtrl = new AbortController()
+  activeRecordId = ''
+  lastSeq = -1
+  const ctrl = new AbortController()
+  abortCtrl = ctrl
+  let finished = false
 
-  try {
-    for await (const ev of streamTripPlan(req, abortCtrl.signal)) {
+  async function consume(events: AsyncIterable<StreamEvent>) {
+    for await (const ev of events) {
       if (cancelled.value) return
       onStreamEvent(ev)
-      if (ev.type === 'done') {
-        if (!ev.success) {
-          message.error(ev.message || '规划失败，请稍后重试')
-          reset()
-          return
-        }
-        progress.percent = 100
-        tripStore.plan = ev.data ?? null
-        pushLog('success', '行程规划完成！')
-        message.success('行程规划完成！')
-        redirectTimer = window.setTimeout(() => router.push('/result'), 600)
+      if (ev.type !== 'done') continue
+      finished = true
+      if (!ev.success) {
+        message.error(ev.message || '规划失败，请稍后重试')
+        reset()
         return
       }
+      progress.percent = 100
+      tripStore.plan = ev.data ?? null
+      pushLog('success', '行程规划完成！')
+      message.success('行程规划完成！')
+      redirectTimer = window.setTimeout(() => router.push('/result'), 600)
     }
+  }
+
+  /** 连接异常时按 record_id + 已收序号续传，最多重试 3 次 */
+  async function resumeUntilDone() {
+    for (
+      let attempt = 0;
+      attempt < 3 && !finished && !cancelled.value && activeRecordId;
+      attempt++
+    ) {
+      try {
+        await consume(
+          resumeTripPlan(
+            { recordId: activeRecordId, userId, after: lastSeq },
+            ctrl.signal,
+          ),
+        )
+      } catch (e: any) {
+        if (e?.name === 'AbortError' || cancelled.value) return
+        await new Promise((r) => setTimeout(r, 800 * (attempt + 1)))
+      }
+    }
+    if (!finished && !cancelled.value) {
+      message.error('连接中断，进度未能完成，请重新规划')
+      reset()
+    }
+  }
+
+  try {
+    await consume(streamTripPlan(req, ctrl.signal))
+    // 流意外结束（网络断开/服务端重启）时自动续传
+    if (!finished && !cancelled.value) await resumeUntilDone()
   } catch (e: any) {
-    if (e?.name !== 'AbortError' && !cancelled.value) {
-      message.error('请求失败：' + (e?.message || '网络异常，请重试'))
-    }
-    reset()
+    if (e?.name === 'AbortError' || cancelled.value) return
+    await resumeUntilDone()
   }
 }
 
 function cancel() {
   cancelled.value = true
   abortCtrl?.abort()
+  if (activeRecordId) {
+    // 用户主动取消：通知后端终止后台图执行，避免继续消耗模型调用
+    cancelTripPlan({ recordId: activeRecordId, userId: getUserId() }).catch(() => {})
+    activeRecordId = ''
+  }
   reset()
 }
 

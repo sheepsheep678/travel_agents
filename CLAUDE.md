@@ -72,9 +72,11 @@ backend/app/
 | health | `GET /api/v1/health` | 数据库、checkpointer、Redis、Milvus（知识库/记忆集合）、各 MCP 服务状态 |
 | sessions | `/api/v1/sessions` | 创建 / ensure / 列表 / 详情 / 删除 |
 | chat | `POST /api/v1/chat/stream` | 对话 SSE（token / done / error） |
+| chat | `POST /api/v1/chat/resume`、`/api/v1/chat/cancel` | 断线按字符偏移续传 / 取消后台生成 |
 | knowledge | `/api/v1/knowledge/*` | 用户上传 / 列表 / 删除；管理端上传 |
 | memory | `/api/v1/memory/*` | 会话情景记忆 / 用户长期记忆的查看与删除 |
 | trip | `/api/v1/trip/plan`、`/api/v1/trip/plan/stream` | 一次性 / SSE 行程规划 |
+| trip | `/api/v1/trip/plan/resume`、`/api/v1/trip/plan/cancel` | 断线按 record_id + seq 续传 / 取消后台执行 |
 
 路由只做参数与依赖注入，业务逻辑在对应模块的 `service.py`；数据库操作在 `repository.py`；`core/deps.py` 提供 `DbSession` 与各 service 的 `Depends`。业务错误抛 `core/exceptions.py` 的 `AppError` 子类，由 `core/exception_handlers.py` 统一转成 `{"success": false, "code": ..., "message": ...}`。
 
@@ -97,7 +99,8 @@ backend/app/
 
 ```
 START ─┬─ attraction_tool_node → attraction_enrich_node → hotel_tool_node → hotel_enrich_node ─┐
-       ├─ weather_tool_node ─────────────────────────────────────────────────────────────────────┤→ plan_gate_node
+       ├─ weather_tool_node ─────────────────────────────────────────────────────────────────────┤
+       ├─ transport_tool_node（填了出发城市时查 12306 去/返程车次，失败降级为空）─────────────────┤→ plan_gate_node
        └─ rag_info_node ──(RAG 景点未覆盖)→ attraction_tool_node                                   │
                         └─(已覆盖)───────────────────────────────────────────────────────────────┘
 plan_gate_node ──数据齐备──→ plan_node → evaluation_node ──通过/达上限──→ END
@@ -151,6 +154,8 @@ data: {"type":"token","delta":"..."}
 data: {"type":"done","session_id":"..."}
 data: {"type":"error","message":"..."}
 ```
+
+生成在后台任务中执行，客户端断开只停止订阅、不中断生成；重连调用 `POST /api/v1/chat/resume`（`user_id` / `session_id` / `offset`，按已收 Unicode 码点数补发 token），`POST /api/v1/chat/cancel` 终止后台生成并保留已生成文本。
 
 对话是 `modules/chat/workflow/` 下的 LangGraph 工作流，`thread_id = chat_sessions.id`：
 
@@ -211,6 +216,7 @@ START → memory_load（加载/压缩记忆）→ intent（正则寒暄 → 快�
 `integrations/cache.py` 是唯一的缓存层，key 统一带 `REDIS_KEY_PREFIX`（默认 `lvji`）+ 命名空间 + 参数 sha1：
 
 - **工具结果**：`wrap_tool()` 在 `McpRegistry._load_one()` 里给每个 MCP 工具套一层缓存（行程规划与对话两条链路共用），知识库工具在 `_make_knowledge_tool()` 里用 `city:user_id` 作用域单独包装。
+- **会话历史**：`ChatHistory.aget_messages()` 读缓存加速，所有写入 checkpointer 的路径（prepare / stream 结束 / 重新生成 / 删除会话）都会主动失效；checkpointer 仍是唯一事实来源。
 - **向量检索结果**：`retrieve_knowledge()` 在调用 Milvus 前先查缓存，命中直接还原 `Document` 列表（含空结果）。
 - **对话回复**：`agent_llm_node`（推荐/规划）与 `chitchat_reply_node` 用「工作流 + 城市 + 上下文指纹」做 key，命中直接回放最终回答、跳过 LLM；只缓存没有 `tool_calls` 的最终文本。
 - 默认 TTL 60s（`REDIS_TTL`）；Redis 连不上只记 warning，所有读写降级为直通，绝不中断业务。本地 `redis` 容器带 `--requirepass root`，`.env` 的 `REDIS_URL` 需要写 `redis://:root@127.0.0.1:6379/0`。
@@ -219,7 +225,7 @@ START → memory_load（加载/压缩记忆）→ intent（正则寒暄 → 快�
 
 `TravelPlanAgent.stream_events()` 从 `graph.astream_events(version="v2")` 中**只保留 `NODE_LABELS`（`agent/constants.py`）里登记的节点**的 chain 事件。新增图节点若不加入 `NODE_LABELS`，前端将收不到该节点的任何进度事件。
 
-事件协议：`node_start` / `node_end` / `node_error` / `done`。`modules/trip/router.py` 用 `EventSourceResponse` 推流，客户端断开时取消图执行。前端解析在 `frontend/src/services/api.ts`，TS 类型在 `frontend/src/types/index.ts`，与 `modules/trip/schemas.py` 的 Pydantic 模型一一对应。
+事件协议：`meta` / `node_start` / `node_end` / `node_error` / `done`，每个事件带递增 `seq`。图在后台任务中执行（事件缓冲在进程内 `_RUNS`，TTL 15 分钟），客户端断开只停止订阅；重连调用 `POST /api/v1/trip/plan/resume`（`record_id` + `after=最后收到的 seq`）补发未收到的事件，`POST /api/v1/trip/plan/cancel` 终止后台执行。进程重启后 `resume` 用数据库中的记录状态合成 `done`。前端解析在 `frontend/src/services/api.ts`，TS 类型在 `frontend/src/types/index.ts`，与 `modules/trip/schemas.py` 的 Pydantic 模型一一对应。
 
 ### 前端
 

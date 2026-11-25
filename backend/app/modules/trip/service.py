@@ -3,11 +3,12 @@
 from __future__ import annotations
 
 import asyncio
-import json
 import re
+import time
+from dataclasses import dataclass, field
 from datetime import date as date_cls
 from datetime import datetime
-from typing import Any, AsyncIterator, Optional
+from typing import AsyncIterator, Optional
 from uuid import uuid4
 
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -15,7 +16,11 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from backend.app.agent.graph import get_travel_plan_agent
 from backend.app.agent.state import initial_state
 from backend.app.core.database import get_session_factory
-from backend.app.core.exceptions import BadRequestError, ExternalServiceError
+from backend.app.core.exceptions import (
+    BadRequestError,
+    ExternalServiceError,
+    NotFoundError,
+)
 from backend.app.core.llm_errors import format_llm_error
 from backend.app.core.logging import get_logger
 from backend.app.integrations.mcp import get_mcp_tool
@@ -24,10 +29,13 @@ from backend.app.modules.trip.models import TripPlanRecord
 from backend.app.modules.trip.repository import TripRepository
 from backend.app.modules.trip.schemas import (
     TrainSearchResponse,
-    TrainSeatPrice,
-    TrainTicket,
     TripPlanResponse,
     TripRequest,
+)
+from backend.app.modules.trip.trains import (
+    clean_city_name,
+    parse_tickets,
+    tool_text,
 )
 
 logger = get_logger(__name__)
@@ -35,30 +43,33 @@ logger = get_logger(__name__)
 _TRAIN_FILTER_RE = re.compile(r"^[GDZTKOFS]{0,8}$")
 
 
-def _clean_city_name(value: str) -> str:
-    """12306 只认城市/车站名，「北京市」需要归一成「北京」。"""
-    name = (value or "").strip()
-    return name[:-1] if name.endswith("市") else name
+@dataclass
+class PlanRun:
+    """一次行程图执行的实时事件缓冲，供首次订阅与断线重连共用。"""
+
+    record_id: str
+    events: list[dict] = field(default_factory=list)
+    done: bool = False
+    cancelled: bool = False
+    task: Optional[asyncio.Task] = None
+    created_at: float = field(default_factory=time.time)
 
 
-def _tool_text(result: Any) -> str:
-    """从 MCP 工具结果中提取纯文本（兼容 list[content] / ToolMessage / str）。"""
-    if isinstance(result, str):
-        return result
-    if isinstance(result, list):
-        parts = []
-        for block in result:
-            if isinstance(block, dict) and block.get("type") == "text":
-                parts.append(str(block.get("text") or ""))
-            elif isinstance(block, str):
-                parts.append(block)
-        return "".join(parts)
-    content = getattr(result, "content", None)
-    if isinstance(content, str):
-        return content
-    if isinstance(content, list):
-        return _tool_text(content)
-    return "" if result is None else str(result)
+_RUNS: dict[str, PlanRun] = {}
+_RUN_TTL_SECONDS = 900
+
+
+def _prune_runs() -> None:
+    """清理已完成且超过 TTL 的运行缓冲，避免内存常驻。"""
+    now = time.time()
+    for key, run in list(_RUNS.items()):
+        if run.done and now - run.created_at > _RUN_TTL_SECONDS:
+            _RUNS.pop(key, None)
+
+
+def _append_event(run: PlanRun, event: dict) -> None:
+    """追加事件并写入递增序号，客户端据此断点续传。"""
+    run.events.append({**event, "seq": len(run.events)})
 
 
 class TripService:
@@ -72,6 +83,7 @@ class TripService:
         state.update(
             {
                 "city": req.city,
+                "origin_city": req.origin_city or "",
                 "user_id": req.user_id or "",
                 "session_id": req.session_id or "",
                 "start_date": req.start_date,
@@ -183,8 +195,8 @@ class TripService:
         filter_flags: str = "",
     ) -> TrainSearchResponse:
         """调用 12306 MCP 查询车次，并把原始 JSON 票面数据映射成稳定响应。"""
-        from_city = _clean_city_name(from_city)
-        to_city = _clean_city_name(to_city)
+        from_city = clean_city_name(from_city)
+        to_city = clean_city_name(to_city)
         filter_flags = (filter_flags or "").strip().upper()
         if not from_city or not to_city:
             raise BadRequestError("出发城市和到达城市不能为空")
@@ -218,7 +230,7 @@ class TripService:
             logger.warning("12306 车次查询失败", from_city=from_city, to_city=to_city, error=str(exc))
             raise ExternalServiceError(f"12306 查询失败：{exc}")
 
-        text = _tool_text(result).strip()
+        text = tool_text(result).strip()
         if not text:
             raise ExternalServiceError("12306 未返回车次数据")
         if text.startswith("Error:"):
@@ -234,47 +246,10 @@ class TripService:
             )
 
         try:
-            raw_tickets = json.loads(text)
+            tickets = parse_tickets(text, limit=20)
         except (TypeError, ValueError):
-            logger.warning("12306 返回内容不是 JSON", preview=text[:200])
+            logger.warning("12306 返回内容不是合法 JSON", preview=text[:200])
             raise ExternalServiceError("12306 返回格式异常，请稍后重试")
-        if not isinstance(raw_tickets, list):
-            raise ExternalServiceError("12306 返回格式异常，请稍后重试")
-
-        tickets: list[TrainTicket] = []
-        for raw in raw_tickets[:20]:
-            if not isinstance(raw, dict):
-                continue
-            prices = []
-            for price in raw.get("prices") or []:
-                if not isinstance(price, dict):
-                    continue
-                prices.append(
-                    TrainSeatPrice(
-                        seat_name=str(price.get("seat_name") or ""),
-                        short=str(price.get("short") or ""),
-                        num=price.get("num"),
-                        price=price.get("price"),
-                        discount=price.get("discount"),
-                    )
-                )
-            tickets.append(
-                TrainTicket(
-                    train_no=str(raw.get("train_no") or ""),
-                    train_code=str(raw.get("start_train_code") or ""),
-                    start_date=str(raw.get("start_date") or ""),
-                    arrive_date=str(raw.get("arrive_date") or ""),
-                    start_time=str(raw.get("start_time") or ""),
-                    arrive_time=str(raw.get("arrive_time") or ""),
-                    duration=str(raw.get("lishi") or ""),
-                    from_station=str(raw.get("from_station") or ""),
-                    to_station=str(raw.get("to_station") or ""),
-                    from_station_telecode=str(raw.get("from_station_telecode") or ""),
-                    to_station_telecode=str(raw.get("to_station_telecode") or ""),
-                    prices=prices,
-                    flags=[str(flag) for flag in raw.get("dw_flag") or [] if flag],
-                )
-            )
 
         logger.info(
             "12306 车次查询完成",
@@ -298,42 +273,147 @@ class TripService:
         state: dict,
         config: dict,
         record_id: str,
+        after: int = -1,
     ) -> AsyncIterator[dict]:
+        """首次订阅：启动后台图执行并回放/推送事件。"""
+        run = self._start_run(req, state, config, record_id)
+        async for event in self._subscribe(run, after):
+            yield event
+
+    def _start_run(
+        self, req: TripRequest, state: dict, config: dict, record_id: str
+    ) -> PlanRun:
+        """创建（或复用）后台执行任务；客户端断开不影响图继续运行。"""
+        _prune_runs()
+        run = _RUNS.get(record_id)
+        if run is not None:
+            return run
+        run = PlanRun(record_id=record_id)
+        _RUNS[record_id] = run
+        _append_event(run, {"type": "meta", "record_id": record_id})
+        run.task = asyncio.create_task(self._execute(req, state, config, run))
+        return run
+
+    async def _execute(
+        self, req: TripRequest, state: dict, config: dict, run: PlanRun
+    ) -> None:
+        """后台执行行程图：事件写入缓冲，完成/失败同步记录状态。"""
         logger.info(
-            "收到旅行规划流式请求",
+            "开始旅行规划流式请求",
             city=req.city,
             start_date=req.start_date,
             end_date=req.end_date,
             travel_days=req.travel_days,
-            preferences=req.preferences,
-            record_id=record_id,
+            record_id=run.record_id,
         )
         agent = get_travel_plan_agent()
         status_set = False
         try:
             async for event in agent.stream_events(state, config=config):
+                if run.cancelled:
+                    break
+                _append_event(run, event)
                 if event.get("type") == "done":
                     status_set = True
                     if event.get("success"):
-                        await self._set_status(record_id, "success", plan=event.get("data"))
+                        await self._set_status(
+                            run.record_id, "success", plan=event.get("data")
+                        )
                     else:
                         await self._set_status(
-                            record_id, "failed", error=event.get("message")
+                            run.record_id, "failed", error=event.get("message")
                         )
-                yield event
         except asyncio.CancelledError:
+            run.cancelled = True
+            raise
+        except Exception as exc:
+            logger.exception("旅行规划后台任务失败", record_id=run.record_id)
+            if not status_set:
+                await self._set_status(run.record_id, "failed", error=str(exc))
+                _append_event(
+                    run,
+                    {
+                        "type": "done",
+                        "success": False,
+                        "message": format_llm_error(exc),
+                        "data": None,
+                    },
+                )
+                status_set = True
+        finally:
+            # 先放开订阅者，状态落库失败也不能让前端永远等待
+            run.done = True
             if not status_set:
                 try:
                     await asyncio.shield(
-                        self._set_status(record_id, "cancelled", error="客户端断开连接")
+                        self._set_status(
+                            run.record_id,
+                            "cancelled",
+                            error="任务已取消" if run.cancelled else "任务意外中断",
+                        )
                     )
-                except Exception:
+                except BaseException:
                     pass
-            raise
-        except Exception as exc:
-            if not status_set:
-                await self._set_status(record_id, "failed", error=str(exc))
-            raise
-        finally:
-            if not status_set:
-                await self._set_status(record_id, "cancelled", error="流式生成结束")
+
+    async def _subscribe(self, run: PlanRun, after: int) -> AsyncIterator[dict]:
+        """从 after 之后重放事件，并持续推送新事件直到任务结束。"""
+        index = max(0, after + 1)
+        while True:
+            while index < len(run.events):
+                yield run.events[index]
+                index += 1
+            if run.done:
+                return
+            await asyncio.sleep(0.05)
+
+    async def assert_record(self, record_id: str, user_id: str = ""):
+        """校验记录存在且属于该用户，供 SSE 响应开始前调用。"""
+        record = await self.repo.get(record_id)
+        if record is None or (user_id and record.user_id and record.user_id != user_id):
+            raise NotFoundError("行程记录不存在")
+        return record
+
+    async def resume(
+        self, record_id: str, user_id: str = "", after: int = -1
+    ) -> AsyncIterator[dict]:
+        """断线重连：按 record_id 校验归属后补发未收到的事件。"""
+        record = await self.assert_record(record_id, user_id)
+        run = _RUNS.get(record_id)
+        if run is not None:
+            async for event in self._subscribe(run, after):
+                yield event
+            return
+
+        # 进程重启或缓冲已过期：用数据库里的终态补发 done
+        seq = 0
+        if after < 0:
+            yield {"type": "meta", "record_id": record_id, "seq": seq}
+            seq += 1
+        if record.status == "success" and record.plan:
+            yield {
+                "type": "done",
+                "success": True,
+                "message": "生成成功",
+                "data": record.plan,
+                "seq": seq,
+            }
+        else:
+            yield {
+                "type": "done",
+                "success": False,
+                "message": record.error or "任务已中断，请重新规划",
+                "data": None,
+                "seq": seq,
+            }
+
+    async def cancel(self, record_id: str, user_id: str = "") -> None:
+        """用户主动取消：终止后台任务并写入 cancelled 状态。"""
+        await self.assert_record(record_id, user_id)
+        run = _RUNS.get(record_id)
+        if run is None or run.done:
+            # 任务已完成时不覆盖 success/failed 状态
+            return
+        run.cancelled = True
+        if run.task is not None and not run.task.done():
+            run.task.cancel()
+        await self._set_status(record_id, "cancelled", error="用户取消")
