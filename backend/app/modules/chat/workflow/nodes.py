@@ -40,6 +40,10 @@ from backend.app.modules.chat.workflow.state import (
     last_ai_text,
     last_human_text,
 )
+from backend.app.modules.chat.workflow.tools import (
+    build_knowledge_reference,
+    search_knowledge_text,
+)
 from backend.app.modules.memory.service import (
     MemoryService,
     schedule_memory_save,
@@ -301,8 +305,14 @@ async def intent_node(state: ChatState, *, intent_llm: Any) -> Command:
     messages = list(state.get("messages") or [])
     query = last_human_text(messages).strip()
     previous = state.get("activated_workflow") or ""
-    # 每轮重置工具轮次，避免上一轮的计数影响本轮工具循环上限
-    base = {"previous_workflow": previous, "risk_level": 0, "tool_round": 0}
+    # 每轮重置工具轮次与预取资料，避免上一轮的计数/资料串到本轮
+    base = {
+        "previous_workflow": previous,
+        "risk_level": 0,
+        "tool_round": 0,
+        "needs_knowledge": True,
+        "knowledge_context": "",
+    }
 
     if not query:
         return Command(
@@ -354,6 +364,7 @@ async def intent_node(state: ChatState, *, intent_llm: Any) -> Command:
         "activated_workflow": result.intent.value,
         "intent_reason": result.reason,
         "risk_level": result.risk_level,
+        "needs_knowledge": result.needs_knowledge,
     }
     # 回到业务工作流时重置闲聊轮次
     if result.intent != IntentType.chitchat:
@@ -521,6 +532,59 @@ async def memory_save_node(state: ChatState) -> dict:
 # ---------------------------------------------------------------------------
 
 
+_KNOWLEDGE_HINT_RE = re.compile(
+    r"攻略|景点|好玩|必去|必玩|美食|小吃|路线|避坑|门票|开放时间"
+    r"|游玩|玩什么|有什么玩|住宿|酒店|怎么玩|值得|行程|规划|几天|玩几天|打卡|夜市"
+)
+# 只查实时信息（车次/天气/时间等）时不需要城市攻略，避免无意义召回
+_REALTIME_ONLY_RE = re.compile(
+    r"天气|气温|下雨|降雨|下雪|车次|高铁|火车|动车|航班|机票|余票|票价|几点"
+    r"|时刻表|路况|导航|打车|地铁|公交|距离|多久到|多久能到"
+)
+
+
+def _should_prefetch(state: ChatState, query: str, workflow: str) -> bool:
+    """判断本轮问题是否需要攻略资料。
+
+    攻略类关键词优先（组合问题如「景点+天气」仍需攻略）；纯实时查询直接跳过；
+    规则无法判断时采用意图识别的 ``needs_knowledge``，未提供则规划默认需要。
+    """
+    if _KNOWLEDGE_HINT_RE.search(query):
+        return True
+    if _REALTIME_ONLY_RE.search(query):
+        return False
+    return bool(state.get("needs_knowledge", workflow == "plan"))
+
+
+async def _prefetch_knowledge(state: ChatState, workflow: str) -> str:
+    """每次用户提问都由系统重新检索知识库，避免完全依赖模型主动调用工具。
+
+    检索按当前问题实时进行（知识库内容可能已更新），不复用上一轮的旧资料；
+    只有同一轮的工具循环（``tool_round > 0``）才沿用本轮刚注入的结果。
+    """
+    if not settings.chat.rag_tool_enabled or not settings.chat.rag_prefetch_enabled:
+        return ""
+    if int(state.get("tool_round") or 0) > 0:
+        return (state.get("knowledge_context") or "").strip()
+
+    query = last_human_text(list(state.get("messages") or [])).strip()
+    if not query:
+        return ""
+    # 按问题内容判断，而不是按意图：规划节点也会承接纯车次查询
+    if not _should_prefetch(state, query, workflow):
+        return ""
+    city = (state.get("city") or "").strip()
+    if city and city not in query:
+        query = f"{city} {query}"
+    text = await search_knowledge_text(
+        query,
+        city=city,
+        user_id=(state.get("user_id") or "").strip(),
+        top_k=settings.chat.rag_prefetch_top_k,
+    )
+    return build_knowledge_reference(text)
+
+
 async def agent_llm_node(
     state: ChatState,
     *,
@@ -531,7 +595,10 @@ async def agent_llm_node(
 ) -> dict:
     """推荐/规划主回答：流式调用绑定工具的模型，产出回答或工具调用。"""
     writer = _get_writer()
+    knowledge = await _prefetch_knowledge(state, workflow)
     messages = build_working_messages(state, system_prompt)
+    if knowledge:
+        messages[0] = SystemMessage(content=f"{messages[0].content}\n\n{knowledge}")
     history = messages[1:]
 
     cache_key = make_key(
@@ -540,12 +607,17 @@ async def agent_llm_node(
         state.get("city") or "",
         _fingerprint(history),
         _memory_signature(state),
+        # 预取资料不同则不能复用旧回复
+        knowledge,
     )
     cached = None if _skip_reply_cache() else await cache_get_json(cache_key)
     if isinstance(cached, str) and cached:
         logger.info("对话回复命中缓存", workflow=workflow)
         _emit(writer, cached)
-        return {"messages": [AIMessage(content=cached, id=_new_id())]}
+        update: dict[str, Any] = {"messages": [AIMessage(content=cached, id=_new_id())]}
+        if knowledge:
+            update["knowledge_context"] = knowledge
+        return update
 
     # 达到工具轮次上限后不再绑定工具，并提示模型基于已有信息作答
     reached_limit = int(state.get("tool_round") or 0) >= settings.chat.max_tool_rounds
@@ -583,9 +655,12 @@ async def agent_llm_node(
         _emit(writer, content)
     elif not tool_calls:
         await cache_set_json(cache_key, content)
-    return {
+    update = {
         "messages": [AIMessage(content=content, tool_calls=tool_calls, id=_new_id())]
     }
+    if knowledge:
+        update["knowledge_context"] = knowledge
+    return update
 
 
 async def _run_tool_call(tools: dict[str, Any], call: dict) -> ToolMessage:

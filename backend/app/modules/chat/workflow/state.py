@@ -27,6 +27,13 @@ class IntentResult(BaseModel):
     intent: IntentType = Field(description="本轮意图")
     reason: str = Field(default="", description="判断依据，20 字以内")
     risk_level: int = Field(default=0, ge=0, le=3, description="危险程度：0 正常，3 明确危险")
+    needs_knowledge: bool = Field(
+        default=True,
+        description=(
+            "本轮是否需要城市攻略/玩法知识；"
+            "只查车次、票价、余票、天气、时间等实时信息时为 false"
+        ),
+    )
 
 
 class SafetyVerdict(BaseModel):
@@ -50,6 +57,10 @@ class ChatState(TypedDict, total=False):
     pending_reply: str
     chitchat_count: int
     tool_round: int
+    # 意图识别判断本轮是否需要攻略资料（纯车次/天气等实时查询为 False）
+    needs_knowledge: bool
+    # 首轮预检索到的知识库资料，供工具循环的后续轮次复用
+    knowledge_context: str
     # 记忆系统：会话摘要 / 已确认事实 / 外置任务状态 / 长期记忆上下文
     memory_summary: str
     memory_facts: dict
@@ -84,6 +95,8 @@ def initial_chat_state(city: str = "", user_id: str = "") -> ChatState:
         "pending_reply": "",
         "chitchat_count": 0,
         "tool_round": 0,
+        "needs_knowledge": True,
+        "knowledge_context": "",
         "memory_summary": "",
         "memory_facts": {},
         "memory_task_state": {},

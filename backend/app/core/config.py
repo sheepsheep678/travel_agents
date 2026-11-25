@@ -311,6 +311,14 @@ class Settings:
         rag_tool_enabled: bool = Field(
             default=True, validation_alias="CHAT_RAG_TOOL_ENABLED"
         )
+        # 推荐/规划首轮是否由系统预先检索知识库并注入提示词（不依赖模型主动调用）
+        rag_prefetch_enabled: bool = Field(
+            default=True, validation_alias="CHAT_RAG_PREFETCH_ENABLED"
+        )
+        # 首轮预检索返回的资料条数
+        rag_prefetch_top_k: int = Field(
+            default=4, validation_alias="CHAT_RAG_PREFETCH_TOP_K"
+        )
         # 闲聊子图最多走模型回复的轮次，超出后改用固定模板
         chitchat_max_rounds: int = Field(
             default=3, validation_alias="CHAT_CHITCHAT_MAX_ROUNDS"
