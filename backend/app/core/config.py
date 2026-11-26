@@ -292,6 +292,39 @@ class Settings:
             default=True, validation_alias="MINERU_FALLBACK"
         )
 
+    class Metrics(_SettingsGroup):
+        """Prometheus / 管理端可观测性。"""
+
+        enabled: bool = Field(default=True, validation_alias="METRICS_ENABLED")
+        path: str = Field(default="/metrics", validation_alias="METRICS_PATH")
+
+    class Evaluation(_SettingsGroup):
+        """离线评测：HyDE 并发与成本估算单价（CNY / 1K tokens 或 1K 文档）。"""
+
+        hyde_concurrency: int = Field(
+            default=4, validation_alias="EVAL_HYDE_CONCURRENCY"
+        )
+        # 单价默认 0：只展示调用量，配置后才输出估算成本
+        price_embedding_per_1k: float = Field(
+            default=0.0, validation_alias="EVAL_PRICE_EMBEDDING_PER_1K"
+        )
+        price_rerank_per_1k: float = Field(
+            default=0.0, validation_alias="EVAL_PRICE_RERANK_PER_1K"
+        )
+        price_llm_input_per_1k: float = Field(
+            default=0.0, validation_alias="EVAL_PRICE_LLM_INPUT_PER_1K"
+        )
+        price_llm_output_per_1k: float = Field(
+            default=0.0, validation_alias="EVAL_PRICE_LLM_OUTPUT_PER_1K"
+        )
+        # 管理端评测任务：完成后保留在内存中的结果、日志尾部行数
+        admin_run_ttl_seconds: int = Field(
+            default=21600, validation_alias="EVAL_ADMIN_RUN_TTL_SECONDS"
+        )
+        admin_log_lines: int = Field(
+            default=200, validation_alias="EVAL_ADMIN_LOG_LINES"
+        )
+
     class Logging(_SettingsGroup):
         level: str = Field(default="INFO", validation_alias="LOG_LEVEL")
         json_logs: bool = Field(default=False, validation_alias="LOG_JSON")
@@ -393,6 +426,8 @@ class Settings:
         self.knowledge = self.Knowledge()
         self.chat = self.Chat()
         self.memory = self.Memory()
+        self.metrics = self.Metrics()
+        self.evaluation = self.Evaluation()
         self.logging = self.Logging()
         self.mcp = self.Mcp()
 

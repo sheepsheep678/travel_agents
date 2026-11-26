@@ -15,6 +15,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.app.agent.graph import get_travel_plan_agent
 from backend.app.agent.state import initial_state
+from backend.app.core.config import settings
 from backend.app.core.database import get_session_factory
 from backend.app.core.exceptions import (
     BadRequestError,
@@ -24,12 +25,16 @@ from backend.app.core.exceptions import (
 from backend.app.core.llm_errors import format_llm_error
 from backend.app.core.logging import get_logger
 from backend.app.integrations.mcp import get_mcp_tool
+from backend.app.modules.memory.service import MemoryService
 from backend.app.modules.sessions.service import SessionService
 from backend.app.modules.trip.models import TripPlanRecord
+from backend.app.modules.trip.prefill import build_trip_prefill
 from backend.app.modules.trip.repository import TripRepository
 from backend.app.modules.trip.schemas import (
     TrainSearchResponse,
     TripPlanResponse,
+    TripPrefillRequest,
+    TripPrefillResponse,
     TripRequest,
 )
 from backend.app.modules.trip.trains import (
@@ -72,14 +77,203 @@ def _append_event(run: PlanRun, event: dict) -> None:
     run.events.append({**event, "seq": len(run.events)})
 
 
+_MEMORY_KIND_LABELS = {
+    "preference": "偏好",
+    "rule": "规则",
+    "fact": "事实",
+    "task_result": "历史任务",
+    "workflow": "工作流",
+    "lesson": "经验",
+}
+
+
+def _join_with_cap(parts: list[str], limit: int) -> str:
+    """按顺序拼接区块并截断到上限，避免超长摘要挤爆提示词。"""
+    kept: list[str] = []
+    used = 0
+    for part in parts:
+        if not part:
+            continue
+        remaining = limit - used
+        if remaining <= 0:
+            break
+        if len(part) > remaining:
+            if remaining > 50:
+                kept.append(part[:remaining])
+            break
+        kept.append(part)
+        used += len(part) + 2
+    return "\n\n".join(kept)
+
+
 class TripService:
     def __init__(self, db: AsyncSession) -> None:
         self.db = db
         self.repo = TripRepository(db)
 
+    async def _build_memory_context(self, req: TripRequest) -> str:
+        """把会话记忆与长期记忆拼成规划提示词区块；失败时静默降级。"""
+        if not (settings.memory.enabled and req.user_id and req.session_id):
+            return ""
+
+        parts: list[str] = []
+        memory_service = MemoryService(self.db)
+        try:
+            row = await memory_service.get_session_memory(
+                req.session_id, req.user_id
+            )
+        except Exception as exc:
+            logger.warning("读取会话记忆失败，规划不注入对话偏好", error=str(exc))
+            row = None
+
+        if row is not None:
+            if row.summary:
+                parts.append(f"【会话摘要】\n{row.summary}")
+
+            facts = row.facts if isinstance(row.facts, dict) else {}
+            confirmed = [
+                str(item).strip()
+                for item in (facts.get("confirmed") or [])
+                if str(item).strip()
+            ]
+            if confirmed:
+                parts.append(
+                    "【已确认的对话偏好/事实】\n"
+                    + "\n".join(f"- {item}" for item in confirmed[:20])
+                )
+            pending = [
+                str(item).strip()
+                for item in (facts.get("pending") or [])
+                if str(item).strip()
+            ]
+            if pending:
+                parts.append(
+                    "【待确认信息（不要当成已确认事实）】\n"
+                    + "\n".join(
+                        f"- {item}" if "待确认" in item else f"- {item}（待确认）"
+                        for item in pending[:10]
+                    )
+                )
+
+            task_state = (
+                row.task_state if isinstance(row.task_state, dict) else {}
+            )
+            task_fields = [
+                (label, str(task_state.get(key) or "").strip())
+                for key, label in (
+                    ("city", "目的地"),
+                    ("days", "天数"),
+                    ("people", "同行人"),
+                    ("budget", "预算"),
+                    ("dates", "日期"),
+                    ("notes", "其他约束"),
+                )
+                if str(task_state.get(key) or "").strip()
+            ]
+            if task_fields:
+                parts.append(
+                    "【对话任务状态】\n"
+                    + "；".join(f"{label}：{value}" for label, value in task_fields)
+                )
+
+        if settings.memory.long_term_enabled:
+            try:
+                rows = await memory_service.list_memories(
+                    req.user_id, city=req.city, limit=20
+                )
+            except Exception as exc:
+                logger.warning("长期记忆召回失败，规划跳过该区块", error=str(exc))
+                rows = []
+            lines = [
+                f"- [{_MEMORY_KIND_LABELS.get(str(item.get('kind') or ''), '记忆')}] "
+                f"{' '.join(str(item.get('content') or '').split())}"
+                for item in rows
+                if str(item.get("status") or "confirmed") == "confirmed"
+                and str(item.get("content") or "").strip()
+            ]
+            if lines:
+                parts.append("【跨会话长期记忆】\n" + "\n".join(lines[:12]))
+
+        if not parts:
+            return ""
+        return _join_with_cap(parts, settings.memory.context_max_chars)
+
+    async def suggest_prefill(
+        self, req: TripPrefillRequest
+    ) -> TripPrefillResponse:
+        """从对话会话提取快速开始表单预填。"""
+        user_id = (req.user_id or "").strip()
+        if not user_id:
+            raise BadRequestError("user_id 不能为空")
+
+        session_service = SessionService(self.db)
+        await session_service.ensure_user(user_id)
+        session = await session_service.assert_session(req.session_id, user_id)
+
+        try:
+            messages = await session_service.history.aget_messages(req.session_id)
+        except Exception as exc:
+            logger.warning("读取对话历史失败，预填只用记忆", error=str(exc))
+            messages = []
+
+        summary = ""
+        facts: dict = {}
+        task_state: dict = {}
+        long_term: list[str] = []
+        if settings.memory.enabled:
+            memory_service = MemoryService(self.db)
+            try:
+                row = await memory_service.get_session_memory(
+                    req.session_id, user_id
+                )
+                if row is not None:
+                    summary = row.summary or ""
+                    facts = row.facts if isinstance(row.facts, dict) else {}
+                    task_state = (
+                        row.task_state if isinstance(row.task_state, dict) else {}
+                    )
+            except Exception as exc:
+                logger.warning("读取会话记忆失败，预填只用对话原文", error=str(exc))
+
+            if settings.memory.long_term_enabled:
+                try:
+                    rows = await memory_service.list_memories(
+                        user_id, city=session.city or "", limit=20
+                    )
+                except Exception as exc:
+                    logger.warning("召回长期记忆失败，预填跳过", error=str(exc))
+                    rows = []
+                long_term = [
+                    " ".join(str(item.get("content") or "").split())
+                    for item in rows
+                    if str(item.get("status") or "confirmed") == "confirmed"
+                    and str(item.get("content") or "").strip()
+                ][:12]
+
+        prefill, source = await build_trip_prefill(
+            session_city=session.city or "",
+            summary=summary,
+            facts=facts,
+            task_state=task_state,
+            long_term=long_term,
+            messages=messages,
+        )
+        logger.info(
+            "对话预填已生成",
+            session_id=req.session_id,
+            source=source,
+            city=prefill.city,
+            travel_days=prefill.travel_days,
+            preferences=prefill.preferences,
+        )
+        return TripPrefillResponse(source=source, prefill=prefill)
+
     async def prepare(self, req: TripRequest) -> tuple[dict, dict, TripPlanRecord]:
         """校验会话归属、构建 state/config，并写入一条 running 记录。"""
         state = initial_state()
+        # 表单字段是用户确认过的显式输入；memory_context 是对话里的补充材料，
+        # 表单缺项时仍能保留「带父母 / 慢节奏 / 不吃辣」等偏好。
+        memory_context = await self._build_memory_context(req)
         state.update(
             {
                 "city": req.city,
@@ -93,6 +287,7 @@ class TripService:
                 "accommodation": req.accommodation,
                 "preferences": req.preferences or [],
                 "free_text_input": req.free_text_input or "",
+                "memory_context": memory_context,
             }
         )
 

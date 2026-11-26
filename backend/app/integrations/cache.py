@@ -1,4 +1,4 @@
-"""Redis 缓存：工具结果、对话回复、向量检索结果（默认 TTL 60 秒）。
+"""Redis 缓存：工具结果、会话历史、向量检索结果（默认 TTL 60 秒）。
 
 设计约定：
 - Redis 不可用时所有读写静默降级为直通，绝不阻断业务流程；
@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import time
 from typing import Any, Optional
 from urllib.parse import urlsplit, urlunsplit
 
@@ -18,6 +19,7 @@ from redis.asyncio import Redis
 
 from backend.app.core.config import settings
 from backend.app.core.logging import get_logger
+from backend.app.core.metrics import observe_cache, observe_tool
 
 logger = get_logger(__name__)
 
@@ -107,21 +109,34 @@ def make_key(namespace: str, *parts: Any) -> str:
     return f"{settings.redis.key_prefix}:{namespace}:{digest}"
 
 
+def _namespace_of(key: str) -> str:
+    """从缓存键里取命名空间；格式不符时归入 other。"""
+    parts = key.split(":", 2)
+    return parts[1] if len(parts) >= 3 else "other"
+
+
 async def cache_get_json(key: str) -> Any:
     """读取 JSON 缓存；未命中或出错返回 None。"""
+    namespace = _namespace_of(key)
     if _client is None:
+        observe_cache(namespace, "bypass")
         return None
     try:
         raw = await _client.get(key)
     except Exception as exc:
+        observe_cache(namespace, "error")
         logger.debug("读取缓存失败", key=key, error=str(exc))
         return None
     if raw is None:
+        observe_cache(namespace, "miss")
         return None
     try:
-        return json.loads(raw)
+        value = json.loads(raw)
     except (TypeError, ValueError):
+        observe_cache(namespace, "error")
         return None
+    observe_cache(namespace, "hit")
+    return value
 
 
 async def cache_set_json(key: str, value: Any, ttl: Optional[int] = None) -> None:
@@ -163,7 +178,13 @@ def wrap_tool(tool: BaseTool, *, scope: str = "") -> BaseTool:
         if cached is not None:
             logger.debug("工具命中缓存", tool=tool.name)
             return cached
-        result = await tool.ainvoke(kwargs)
+        started = time.perf_counter()
+        try:
+            result = await tool.ainvoke(kwargs)
+        except Exception:
+            observe_tool(tool.name, "error", time.perf_counter() - started)
+            raise
+        observe_tool(tool.name, "ok", time.perf_counter() - started)
         payload = _cacheable(result)
         if payload is not None:
             await cache_set_json(key, payload)

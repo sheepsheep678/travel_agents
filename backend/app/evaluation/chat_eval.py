@@ -223,6 +223,12 @@ def main() -> None:
         default="",
         help="只跑某一类用例",
     )
+    parser.add_argument(
+        "--output",
+        type=str,
+        default="",
+        help="报告输出路径；留空写到 results/chat_eval_<时间>.json",
+    )
     args = parser.parse_args()
 
     setup_logging()
@@ -230,7 +236,12 @@ def main() -> None:
         evaluate(args.limit, args.concurrency, not args.no_judge, args.category)
     )
     _RESULTS.mkdir(parents=True, exist_ok=True)
-    path = _RESULTS / f"chat_eval_{datetime.now():%Y%m%d_%H%M%S}.json"
+    path = (
+        Path(args.output)
+        if args.output
+        else _RESULTS / f"chat_eval_{datetime.now():%Y%m%d_%H%M%S}.json"
+    )
+    path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8")
     _print_report(report)
     print(f"报告已保存: {path}")

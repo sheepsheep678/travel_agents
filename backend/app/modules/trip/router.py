@@ -12,12 +12,30 @@ from backend.app.modules.trip.schemas import (
     TrainSearchResponse,
     TripCancelRequest,
     TripPlanResponse,
+    TripPrefillRequest,
+    TripPrefillResponse,
     TripRequest,
     TripResumeRequest,
 )
 from backend.app.modules.trip.service import TripService
 
 router = APIRouter(prefix="/trip", tags=["trip"])
+
+
+@router.post(
+    "/prefill",
+    response_model=TripPrefillResponse,
+    summary="从对话会话提取行程表单预填",
+)
+async def suggest_trip_prefill(
+    req: TripPrefillRequest,
+    service: TripService = Depends(get_trip_service),
+):
+    """读取会话记忆 + 最近对话，用快模型结构化成快速开始表单字段。
+
+    失败时回落到确定性规则，保证用户点击后总能进入预填表单。
+    """
+    return await service.suggest_prefill(req)
 
 
 @router.post("/plan", response_model=TripPlanResponse, summary="生成旅行计划")

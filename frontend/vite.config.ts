@@ -11,6 +11,13 @@ const apiProxy = {
     timeout: LONG_TIMEOUT,
     proxyTimeout: LONG_TIMEOUT,
   },
+  // 管理端「Prometheus /metrics」链接也走代理，避免落到 5173 返回 404
+  '/metrics': {
+    target: 'http://127.0.0.1:8000',
+    changeOrigin: true,
+    timeout: LONG_TIMEOUT,
+    proxyTimeout: LONG_TIMEOUT,
+  },
 }
 
 export default defineConfig({

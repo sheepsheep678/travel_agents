@@ -31,3 +31,19 @@
 | dense | 100% | 100% | 1.000 |
 | sparse (BM25) | 94% | 100% | 0.970 |
 | hybrid（RRF + rerank） | 100% | 100% | 1.000 |
+
+> 新版报告额外输出 nDCG@10、P50/P95 延迟、调用量与 HyDE 消融；
+> 上述 Recall/MRR 基线来自 2026-11-23，重跑后请补充新列。
+
+## 难负例评测集（待跑基线）
+
+- 数据集：`datasets/retrieval_eval_hard.jsonl`（48 条：同城不同景点 12 / 跨城同名 12 /
+  长文档 12 / 模糊 query 12）
+- SHA256：`cc07358d4a17…`（以报告中的 `dataset_sha256` 为准）
+- 集合：Milvus `default/retrieval_eval_hard`（base 为 `retrieval_eval`，互不覆盖）
+- 首次运行：`python -m backend.app.evaluation.retrieval_eval --dataset hard --hyde both`
+- 运行后请把 ablation 表、分类型指标与 `city_filter_check` 结果补到本节。
+- 冒烟验证（2026-11-26，非完整基线）：集合已入库 48 文档 / 85 子块；14 条 query
+  （含 2 条跨城同名）在 `--no-rerank --hyde off` 下 Recall@1/5=100%、nDCG@10=1.000、
+  `wrong_city_rate=0`；1 条 query 的 `--hyde both` 正确输出 6 行消融表与
+  HyDE token / 延迟用量。

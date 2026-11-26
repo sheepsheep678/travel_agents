@@ -8,6 +8,7 @@ from __future__ import annotations
 
 from typing import Any
 
+from backend.app.core.metrics import NodeMetricsCallback
 from backend.app.modules.chat.workflow.graph import build_chat_graph
 
 _graphs: dict[tuple[str, str], Any] = {}
@@ -27,5 +28,8 @@ def reset_chat_agents() -> None:
 
 
 def chat_config(session_id: str) -> dict:
-    """checkpointer 线程配置：thread_id 即服务端会话 ID。"""
-    return {"configurable": {"thread_id": session_id}}
+    """checkpointer 线程配置：thread_id 即服务端会话 ID；附带节点耗时回调。"""
+    return {
+        "configurable": {"thread_id": session_id},
+        "callbacks": [NodeMetricsCallback("chat")],
+    }

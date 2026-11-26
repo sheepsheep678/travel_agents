@@ -26,6 +26,7 @@ from backend.app.agent.state import PlannerState, initial_state
 from backend.app.core.database import get_checkpointer
 from backend.app.core.llm_errors import format_llm_error
 from backend.app.core.logging import get_logger
+from backend.app.core.metrics import NodeMetricsCallback, observe_node
 from backend.app.integrations.llm import get_fast_llm, get_llm
 from backend.app.integrations.mcp import get_mcp_tools
 
@@ -127,9 +128,11 @@ class TravelPlanAgent:
 
     async def ainvoke(self, state: PlannerState, config: Optional[dict] = None):
         self._ensure_graph()
-        if config:
-            return await self.graph.ainvoke(state, config=config)
-        return await self.graph.ainvoke(state)
+        cfg = dict(config or {})
+        callbacks = list(cfg.get("callbacks") or [])
+        callbacks.append(NodeMetricsCallback("trip"))
+        cfg["callbacks"] = callbacks
+        return await self.graph.ainvoke(state, config=cfg)
 
     async def stream_events(self, state: PlannerState, config: Optional[dict] = None):
         """基于 astream_events 的实时进度事件流（供 SSE 端点推送给前端）。
@@ -175,14 +178,18 @@ class TravelPlanAgent:
                     payload = self._node_end_payload(name, output)
                     t0 = started_at.pop(name, None)
                     if t0 is not None:
-                        payload["duration_ms"] = round((time.perf_counter() - t0) * 1000)
+                        elapsed = time.perf_counter() - t0
+                        payload["duration_ms"] = round(elapsed * 1000)
+                        observe_node("trip", name, elapsed)
                         logger.info("节点耗时", node=name, duration_ms=payload["duration_ms"])
                     yield {"type": "node_end", "node": name, "payload": payload}
                     # plan_node 经门控放行后仅执行一次；修订循环会再次激活，取最后非空计划
                     if name == "plan_node" and output.get("final_plan") is not None:
                         final_plan = output["final_plan"]
                 else:  # on_chain_error：带重试策略的节点会再次启动
-                    started_at.pop(name, None)
+                    t0 = started_at.pop(name, None)
+                    if t0 is not None:
+                        observe_node("trip", name, time.perf_counter() - t0, status="error")
                     error = (ev.get("data") or {}).get("error") or "未知错误"
                     yield {
                         "type": "node_error",

@@ -33,6 +33,8 @@ class PlannerState(TypedDict):
     accommodation: str
     preferences: List[str]
     free_text_input: str
+    # 来自对话记忆的偏好/约束，表单字段缺项时兜底
+    memory_context: str
     attraction_names: Annotated[set[str], _add_set]
     attractions_raw: str
     attractions_result: Annotated[List[Attraction], _add_list]
@@ -69,6 +71,7 @@ def initial_state() -> dict:
         "accommodation": "",
         "preferences": [],
         "free_text_input": "",
+        "memory_context": "",
         "attraction_names": set(),
         "attractions_raw": "",
         "attractions_result": [],

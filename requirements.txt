@@ -33,3 +33,5 @@ psycopg[binary,pool]>=3.2.0
 langgraph-checkpoint-postgres>=3.2.0,<4.0.0
 # ===== Redis：工具结果 / 对话回复 / 检索结果缓存（TTL 60s） =====
 redis>=5.0.0
+# ===== 可观测性：Prometheus 指标（LLM 延迟 / token / 缓存 / 熔断 / 节点耗时） =====
+prometheus_client>=0.20.0

@@ -49,6 +49,36 @@ class TripRequest(BaseModel):
     }
 
 
+class TripPrefillRequest(BaseModel):
+    """从对话会话提取快速开始表单预填。"""
+
+    user_id: str = Field(..., min_length=1, description="浏览器匿名用户 ID")
+    session_id: str = Field(..., min_length=1, description="对话会话 ID")
+
+
+class TripPrefill(BaseModel):
+    """快速开始表单的可预填字段；LLM 结构化输出与接口响应共用。"""
+
+    city: str = Field(default="", description="目的地城市")
+    origin_city: str = Field(default="", description="出发城市")
+    start_date: str = Field(default="", description="开始日期 YYYY-MM-DD")
+    end_date: str = Field(default="", description="结束日期 YYYY-MM-DD")
+    travel_days: int = Field(default=0, ge=0, le=30, description="旅行天数")
+    transportation: str = Field(default="", description="交通方式")
+    accommodation: str = Field(default="", description="住宿偏好")
+    preferences: List[str] = Field(default_factory=list, description="旅行偏好标签")
+    free_text_input: str = Field(default="", description="额外要求")
+    notes: str = Field(default="", description="提取说明或待确认信息")
+
+
+class TripPrefillResponse(BaseModel):
+    """对话预填响应。"""
+
+    success: bool = Field(default=True, description="是否成功")
+    source: str = Field(default="llm", description="提取来源：llm / fallback")
+    prefill: TripPrefill = Field(..., description="预填表单字段")
+
+
 class TripResumeRequest(BaseModel):
     """断线续传：按规划记录重发未收到的事件。"""
 

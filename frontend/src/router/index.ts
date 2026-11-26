@@ -17,6 +17,12 @@ const router = createRouter({
     { path: '/quick-start', name: 'quick-start', component: QuickStart, meta: { title: '快速开始 · 旅迹智绘' } },
     { path: '/chat', name: 'chat', component: Chat, meta: { title: 'AI 对话 · 旅迹智绘' } },
     { path: '/result', name: 'result', component: Result, meta: { title: '我的旅行计划 · 旅迹智绘' } },
+    {
+      path: '/admin',
+      name: 'admin',
+      component: () => import('../views/Admin.vue'),
+      meta: { title: '管理端 · 评测与可观测性' },
+    },
   ],
 })
 

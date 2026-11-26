@@ -21,6 +21,7 @@ from typing import Any, Dict, List, Optional, Sequence
 
 from backend.app.core.config import settings
 from backend.app.core.logging import get_logger
+from backend.app.core.metrics import observe_rerank
 from backend.app.integrations.llm import get_embedding_model
 
 logger = get_logger(__name__)
@@ -531,8 +532,10 @@ async def _rerank(
 ) -> Optional[List[RetrievalHit]]:
     global _rerank_disabled_until
     if not settings.milvus.rerank_enabled or not hits:
+        observe_rerank("disabled")
         return None
     if time.time() < _rerank_disabled_until:
+        observe_rerank("circuit_open")
         return None
 
     candidates = list(hits)[: settings.milvus.rerank_max_candidates]
@@ -542,12 +545,14 @@ async def _rerank(
         results = await asyncio.to_thread(_rerank_sync, query, documents, top_n)
     except Exception as exc:
         _rerank_disabled_until = time.time() + _RERANK_COOLDOWN_SECONDS
+        observe_rerank("circuit_breaker")
         logger.warning(
             "Cross-Encoder 精排失败，回退 RRF 融合（熔断 %ss）",
             int(_RERANK_COOLDOWN_SECONDS),
             error=str(exc),
         )
         return None
+    observe_rerank("ok")
 
     reranked: List[RetrievalHit] = []
     for item in results:

@@ -7,6 +7,7 @@ import './styles/index.css'
 import './styles/sketchbook.css'
 import './styles/site.css'
 import './styles/markdown.css'
+import './styles/admin.css'
 
 const app = createApp(App)
 app.use(Antd)

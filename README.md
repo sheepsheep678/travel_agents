@@ -1,6 +1,6 @@
 # 旅迹智绘 · Travel-agents
 
-**旅迹智绘** 是一个基于 **LangGraph 多智能体工作流** 的 AI 旅行规划系统。你可以翻开手账选一座城、写下日期与偏好，也可以先和 AI 聊聊想法；确认之后，Agent 会并行调用高德地图 MCP 与本地知识库，拿到真实的景点、酒店和天气数据，再通过「规划 → 评估 → 反思修订」循环，生成一份包含每日行程、餐饮、住宿与预算的完整旅行计划，并通过 SSE 实时推送生成进度。
+**旅迹智绘** 是一个基于 **LangGraph 多智能体工作流** 的 AI 旅行规划系统。你可以翻开手账选一座城、写下日期与偏好，也可以先和 AI 聊聊想法；确认之后，Agent 会并行调用高德地图 MCP、12306 MCP 与本地知识库，拿到真实的景点、酒店、天气与车次数据，再通过「规划 → 评估 → 反思修订」循环，生成一份包含每日行程、餐饮、住宿与预算的完整旅行计划，并通过 SSE 实时推送生成进度。
 
 ## 📸 界面预览
 
@@ -14,15 +14,23 @@
 
 | AI 对话 · 边聊边定方向 | 知识库 · 上传自己的攻略 |
 | :---: | :---: |
-| ![AI 对话](pic/AI对话.png) | ![上传知识库](pic/上传知识库.png) |
+| ![AI 对话](pic/ai对话.png) | ![上传知识库](pic/上传知识库.png) |
 
-| 规划进度 · SSE 实时反馈 | 规划结果 · 概览与预算 |
+| 知识库 · 已上传资料 | 规划进度 · SSE 实时反馈 |
 | :---: | :---: |
-| ![开始规划](pic/开始规划.png) | ![结果概览](pic/结果.png) |
+| ![已上传知识库](pic/已上传知识库.png) | ![开始规划](pic/开始规划.png) |
+
+| 规划结果 · 登机牌概览 | 车次票面 · 左右滑动切换 |
+| :---: | :---: |
+| ![结果概览](pic/结果.png) | ![车次票面](pic/结果2.png) |
 
 | 规划结果 · 路线地图 | 规划结果 · 每日行程 |
 | :---: | :---: |
-| ![路线地图](pic/路线.png) | ![每日行程](pic/行程.png) |
+| ![路线地图](pic/结果3.png) | ![每日行程](pic/结果4.png) |
+
+| 规划结果 · 天气信息 |
+| :---: |
+| ![天气信息](pic/结果5.png) |
 
 ## ✨ 功能特性
 
@@ -30,7 +38,7 @@
 
 - **沉浸式首页**：牛皮纸手账视觉、叠放的旅行明信片与热门城市直达入口，一眼看清「快速开始」和「AI 对话」两种开始方式。
 - **快速开始**：11 座城市（北京 / 上海 / 广州 / 杭州 / 西安 / 成都 / 重庆 / 长沙 / 青岛 / 厦门 / 南京）配手绘城市插画，纯 CSS 3D + `requestAnimationFrame` 弹簧动画实现真实翻书效果，支持拖拽、键盘与点击城市直达。
-- **AI 对话**：像聊天一样说出目的地、天数、同行人和偏好，支持多会话管理、流式回复、停止与重新生成；会话元数据存 PostgreSQL，对话内容快照由 LangGraph checkpointer 保存（`thread_id = session_id`），内置时间与 12306 MCP 工具，可直接问「今天几号」「北京到上海明天的高铁」；聊清楚之后可一键带着已确定的信息进入快速开始。
+- **AI 对话**：像聊天一样说出目的地、天数、同行人和偏好，支持多会话管理、流式回复、停止、重新生成与断线续传；内置意图路由、安全围栏与分层记忆，能记住你的偏好和已经聊定的行程细节。会话元数据存 PostgreSQL，消息原文由 LangGraph checkpointer 保存（`thread_id = session_id`）；内置时间与 12306 MCP 工具，可直接问「今天几号」「北京到上海明天的高铁」；聊清楚之后可一键带着已确定的信息进入快速开始。
 - **跨入口衔接**：首页城市链接、对话页整理出的城市与偏好都会自动预填到快速开始表单，生成完成后再进入结果页，全程不需要重复填写。
 
 ### ✍️ 规划与结果
@@ -65,6 +73,7 @@
 graph TD
     START["START 并行分叉"] --> A["attraction_tool_node 景点搜索(高德MCP)"]
     START --> W["weather_tool_node 天气查询"]
+    START --> T["transport_tool_node 12306 去/返程车次"]
     START --> R["rag_info_node HyDE知识库检索"]
 
     R -->|RAG景点未覆盖| A
@@ -75,6 +84,7 @@ graph TD
     H --> HE["hotel_enrich_node 酒店解析"]
     HE --> G
     W --> G
+    T --> G
 
     G -->|数据齐备| P["plan_node 行程规划(结构化输出+回填)"]
     G -->|数据未齐备| END["END"]
@@ -86,10 +96,45 @@ graph TD
 
 **关键设计**：
 
-- **门控节点** `plan_gate_node`：三条并行分支全部汇聚到此，通过 `is_plan_ready()` 判定数据齐备后才放行规划；未齐备时本轮直接 END，剩余分支完成后会再次触发门控。
+- **门控节点** `plan_gate_node`：景点 / 酒店 / 天气 / 知识库 / 车次分支全部汇聚到此，通过 `is_plan_ready()` 判定景点、酒店、天气与知识库齐备后才放行规划；未齐备时本轮直接 END，剩余分支完成后会再次触发门控。车次查询失败只降级为空，不阻断规划。
 - **状态 reducer**：景点名 / 知识库景点名使用集合并集，检索结果、酒店结果、历史计划等使用列表累加，支持多轮补搜与修订叠加而不是覆盖。
 - **知识库过滤下推**：城市语料与用户上传资料在 Milvus 检索阶段就按 `scope / city / owner_id` 过滤，避免把其他城市的资料或他人的私有资料带进规划。
 - **可靠性**：关键节点（RAG / 规划 / 评估 / 景点结构化）配置 `RetryPolicy` 应对 LLM 偶发失败；结构化输出失败时回退到确定性模板。
+
+## 💬 AI 对话链路
+
+对话也是一张 LangGraph 工作流（`backend/app/modules/chat/workflow/`），`thread_id = session_id`。每一轮依次经过「加载记忆 → 意图路由 → 业务工作流 → 安全复核 → 异步写记忆」：
+
+```mermaid
+graph TD
+    START(["START"]) --> ML["① memory_load<br/>加载 / 压缩分层记忆"]
+    ML --> INTENT["② intent 意图识别<br/>正则寒暄 → 快模型结构化识别"]
+    INTENT --> ROUTE{"按意图路由"}
+
+    ROUTE -->|闲聊 chitchat| C["chitchat 子图<br/>业务意图守卫 → 闲聊回复"]
+    ROUTE -->|推荐 / 规划| RP["recommend / plan<br/>bind_tools 工具循环"]
+    ROUTE -->|转人工 / 兜底| HF["human / fallback"]
+    ROUTE -->|危险 / risk ≥ 3| X["固定拒绝话术"]
+
+    RP <-->|tool_calls / ToolMessage| TOOLS["agent_tools<br/>高德 / 时间 / 12306 / 知识库"]
+
+    C --> EMIT["emit_reply<br/>统一推送闲聊回复"]
+    EMIT --> SAFETY
+    RP --> SAFETY
+    HF --> SAFETY
+    SAFETY["③ safety 大模型复核"] --> SAVE["④ memory_save 异步写记忆"]
+    SAVE --> END(["END"])
+    X --> END
+```
+
+**链路要点**：
+
+- **分层记忆**：`memory_load` 在轮首加载最近 5 轮工作记忆、会话滚动摘要、已确认 / 待确认事实、任务状态与长期记忆 top-k；`memory_save` 在轮末把记忆写入挂到后台任务，绝不阻塞 `done` 事件。记忆读写失败时降级为无记忆继续对话。
+- **意图路由**：寒暄正则命中时直接回复并跳到安全复核；其余请求让快模型以 `with_structured_output(IntentResult)` 输出 `intent / reason / risk_level`，再按意图进入四类分支。识别失败走兜底，`dangerous` 或 `risk_level ≥ 3` 直接返回固定拒绝话术，不进入任何业务工作流。
+- **工具循环**：推荐 / 规划节点不再使用 `create_agent`，而是用 `llm.bind_tools()` 流式作答；有 `tool_calls` 就进入 `agent_tools` 按工具名执行并回写 `ToolMessage`（失败也回写错误文本），再回到 `activated_workflow` 对应的节点。达到 `CHAT_MAX_TOOL_ROUNDS` 后改用未绑定工具的主模型强制作答，避免悬空工具调用。
+- **闲聊子图**：`chitchat_guard` 检测到业务意图时通过 `Command.PARENT` 跳回 `plan` / `recommend`；子图的 custom 事件不会传回父图，回复先写入 `pending_reply`，由父图 `emit_reply` 统一推送。
+- **统一收尾**：除危险请求直接 `END` 外，所有回复都汇入 `safety` 大模型复核（可用 `CHAT_SAFETY_LLM_ENABLED` 关闭），不安全时撤回并替换，再进入 `memory_save` 异步写记忆后结束。
+- **流式与续传**：`POST /api/v1/chat/stream` 以 SSE 推送 `token` / `done` / `error`，生成在后台任务执行；客户端断开只停止订阅，可通过 `POST /api/v1/chat/resume` 按已收 Unicode 码点偏移补发，或 `POST /api/v1/chat/cancel` 终止生成并保留已生成文本。每次调用模型前都会剔除未配对的工具调用，避免上游 400。
 
 ## 🛠 技术栈
 
@@ -97,12 +142,15 @@ graph TD
 |---|---|
 | Agent 编排 | LangGraph 1.x、LangChain 1.x |
 | 大模型 | LangChain `init_chat_model`（OpenAI 兼容接口，默认阿里云百炼 DashScope 通义千问，可替换任意兼容模型） |
-| 工具接入 | 高德地图 MCP（SSE 传输） |
+| 工具接入 | 高德地图 MCP（SSE）、时间 MCP（stdio）、12306 MCP（stdio） |
 | RAG | Milvus 3.x（稠密向量 + BM25 稀疏向量 + Cross-Encoder 精排）、PostgreSQL 父块、HyDE |
+| 记忆 | PostgreSQL 情景记忆（滚动摘要 / 事实 / 任务状态）+ Milvus `user_memories` 长期记忆 |
+| 缓存 | Redis 8.x（工具结果 / 会话历史 / 检索结果，TTL 60s，故障降级直通） |
 | 知识库解析 | MinerU 云端 Precision API（OCR）、Markdown / TXT、pypdf、DashScope Qwen-VL 图片转写、LLM Markdown 排版优化 |
-| 后端 | FastAPI、Uvicorn、SSE（`astream_events`）、pydantic-settings |
+| 后端 | FastAPI、Uvicorn、SSE（`astream_events`）、pydantic-settings、AsyncPostgresSaver |
 | 前端 | Vue 3、Vue Router、Vite、TypeScript、Ant Design Vue、高德地图 JS API 2.0、jspdf / html2canvas、CSS 3D 翻书动效 |
-| 可观测 | LangSmith 追踪（可选） |
+| 可观测 | Prometheus `/metrics` + 管理端看板（LLM 延迟 / token、缓存命中、精排熔断、节点与工具耗时） |
+| 评测 | 检索评测（Recall / MRR / nDCG、分类型、HyDE 消融）+ 对话意图评测（80 条） |
 
 ## 🚀 快速开始
 
@@ -110,6 +158,7 @@ graph TD
 
 - Python ≥ 3.11
 - Node.js ≥ 18
+- Docker Desktop（Milvus / Redis 容器）与 PostgreSQL
 - 高德开放平台 API Key（服务端 MCP Key + 前端 Web JS Key 两把）
 - 阿里云百炼（DashScope）API Key
 
@@ -144,11 +193,21 @@ pip install -r requirements.txt
 | `AMAP_API_KEY` | 高德开放平台 Key（后端 MCP 使用） |
 | `VITE_AMAP_WEB_JS_KEY` | 高德 JS API Key（结果页地图），**写入 `frontend/.env`** |
 | `KNOWLEDGE_VLM_MODEL` | 图片知识库转写模型（如 Qwen-VL）；留空则不支持图片上传 |
-| `KNOWLEDGE_ADMIN_TOKEN` | 管理端知识库上传令牌（可选） |
+| `KNOWLEDGE_ADMIN_TOKEN` | 管理端令牌：知识库上传 + `/admin` 评测看板（配置后才能使用管理端） |
+| `METRICS_ENABLED` / `METRICS_PATH` | 是否启用 Prometheus 指标与抓取路径，默认 `true` / `/metrics` |
+| `EVAL_HYDE_CONCURRENCY` | 检索评测 HyDE 生成并发，默认 `4` |
+| `EVAL_PRICE_*_PER_1K` | 评测成本估算单价（CNY / 1K token 或文档）；默认 0 只展示调用量 |
 | `KNOWLEDGE_MAX_FILE_MB` / `KNOWLEDGE_MAX_TEXT_CHARS` | 单文件大小 / 文本长度上限，默认 `10` MB / `20000` 字 |
 | `MILVUS_URI` / `MILVUS_DB_NAME` / `MILVUS_COLLECTION` | Milvus 地址、数据库、子块集合名 |
+| `MILVUS_MEMORY_COLLECTION` | 长期记忆集合名，默认 `user_memories` |
 | `MILVUS_DENSE_DIM` / `MILVUS_DENSE_METRIC` | 稠密向量维度与度量，默认 `1024` / `COSINE` |
 | `MILVUS_RERANK_ENABLED` / `MILVUS_RERANK_MODEL` | 是否启用 Cross-Encoder 精排及模型（默认 `gte-rerank-v2`） |
+| `REDIS_ENABLED` / `REDIS_URL` | Redis 缓存开关与连接地址（不可用时自动降级为直通） |
+| `REDIS_TTL` / `REDIS_KEY_PREFIX` | 缓存 TTL（默认 `60` 秒）与 key 前缀（默认 `lvji`） |
+| `MEMORY_ENABLED` / `MEMORY_WINDOW_ROUNDS` | 分层记忆开关 / 工作记忆窗口轮数，默认 `true` / `5` |
+| `MEMORY_SUMMARY_TRIGGER_MESSAGES` / `MEMORY_EXTRACT_INTERVAL_ROUNDS` | 摘要压缩触发消息数 / 批量事实抽取间隔轮数 |
+| `MEMORY_LONG_TERM_ENABLED` / `MEMORY_LONG_TERM_TOP_K` | 长期记忆开关 / 每轮召回条数 |
+| `CHAT_MAX_TOOL_ROUNDS` / `CHAT_MAX_HISTORY_MESSAGES` | 对话工具循环上限 / 历史消息条数 |
 | `MINERU_ENABLED` / `MINERU_TOKEN` | MinerU 云端解析开关与 mineru.net API Token（失败自动回退 pypdf） |
 | `MINERU_OCR` / `MINERU_MODEL` / `MINERU_LANGUAGE` | 是否开启 OCR、解析模型（vlm/pipeline/html）、文档语言 |
 | `KNOWLEDGE_MARKDOWN_NORMALIZE` | 是否用快模型整理 Markdown 排版，默认 `true` |
@@ -182,15 +241,45 @@ EMBEDDING_MODEL_NAME=text-embedding-v4
 
 AMAP_API_KEY=xxxx
 KNOWLEDGE_VLM_MODEL=
+# 管理端令牌：知识库上传 + /admin 评测看板
 KNOWLEDGE_ADMIN_TOKEN=
+
+# 可观测性 / 离线评测
+METRICS_ENABLED=true
+METRICS_PATH=/metrics
+EVAL_HYDE_CONCURRENCY=4
+# 成本估算单价（CNY / 1K）；留 0 只展示调用量
+EVAL_PRICE_EMBEDDING_PER_1K=0
+EVAL_PRICE_RERANK_PER_1K=0
+EVAL_PRICE_LLM_INPUT_PER_1K=0
+EVAL_PRICE_LLM_OUTPUT_PER_1K=0
 
 # Milvus（Docker Desktop）与混合检索
 MILVUS_URI=http://127.0.0.1:19530
 MILVUS_DB_NAME=default
 MILVUS_COLLECTION=knowledge_chunks
+MILVUS_MEMORY_COLLECTION=user_memories
 MILVUS_DENSE_DIM=1024
 MILVUS_RERANK_ENABLED=true
 MILVUS_RERANK_MODEL=gte-rerank-v2
+
+# Redis 缓存（工具结果 / 会话历史 / 检索结果；连不上时降级为直通）
+REDIS_ENABLED=true
+REDIS_URL=redis://:root@127.0.0.1:6379/0
+REDIS_TTL=60
+REDIS_KEY_PREFIX=lvji
+
+# 分层记忆
+MEMORY_ENABLED=true
+MEMORY_WINDOW_ROUNDS=5
+MEMORY_SUMMARY_TRIGGER_MESSAGES=12
+MEMORY_EXTRACT_INTERVAL_ROUNDS=3
+MEMORY_LONG_TERM_ENABLED=true
+MEMORY_LONG_TERM_TOP_K=6
+
+# 对话工作流
+CHAT_MAX_TOOL_ROUNDS=15
+CHAT_MAX_HISTORY_MESSAGES=20
 
 # 文档解析（MinerU 云端 Precision API）
 MINERU_ENABLED=false
@@ -225,18 +314,20 @@ VITE_AMAP_WEB_JS_KEY=你的高德Web端JS API Key
 ```bash
 # 0) 启动 Milvus（Windows Docker Desktop 单容器，已包含 embedded etcd + 本地存储）
 docker start milvus-standalone
+# 可选：启动 Redis 缓存（未启动时缓存自动降级为直通）
+docker start redis
 
 # 首次运行：创建 travel_agents 数据库、业务表与 LangGraph checkpoint 表
 python -m backend.app.scripts.init_db
 
-# 初始化 Milvus 数据库 / 集合 / BM25 函数 / 向量与标量索引
+# 初始化 Milvus 数据库 / 知识库集合 / 记忆集合 / BM25 函数 / 索引
 python -m backend.app.scripts.init_milvus
 
 # 启动后端
 python -m backend.app.main
 ```
 
-启动时会校验配置、连接 PostgreSQL、初始化 checkpointer、初始化 Milvus 集合，并连接高德 / 时间 / 12306 MCP，默认监听 `8000` 端口。Milvus 不可用时不会阻断启动，知识库检索会降级为空上下文。需要热重载时使用：
+启动时会校验配置、连接 PostgreSQL、初始化 checkpointer、初始化 Milvus 集合，并连接 Redis 与高德 / 时间 / 12306 MCP，默认监听 `8000` 端口。Milvus / Redis 不可用时不会阻断启动，知识库检索会降级为空上下文、缓存降级为直通。需要热重载时使用：
 
 ```bash
 uvicorn backend.app.main:app --reload --loop backend.app.core.runtime:proactor_loop_factory
@@ -253,63 +344,6 @@ npm run dev
 ```
 
 访问 `http://localhost:5173` 即可使用。
-
-## 🔌 API 说明
-
-| 方法 | 路径 | 说明 |
-|---|---|---|
-| GET | `/api/v1/health` | 健康检查（数据库 / checkpointer / 各 MCP 服务状态） |
-| POST | `/api/v1/sessions/ensure` | 校验 `user_id + session_id`；不存在则创建 |
-| POST | `/api/v1/sessions` | 创建会话 |
-| GET | `/api/v1/sessions?user_id=` | 会话列表 |
-| GET | `/api/v1/sessions/{id}?user_id=` | 会话详情（含消息） |
-| DELETE | `/api/v1/sessions/{id}?user_id=` | 删除会话 |
-| POST | `/api/v1/chat/stream` | AI 对话 SSE（token / done / error），消息由 checkpointer 保存 |
-| POST | `/api/v1/trip/plan` | 一次性生成旅行计划 |
-| POST | `/api/v1/trip/plan/stream` | SSE 流式生成，实时推送节点进度 |
-| POST | `/api/v1/knowledge/upload` | 上传文本 / 文件到当前用户知识库（Form `user_id`） |
-| GET | `/api/v1/knowledge/list?user_id=` | 列出当前用户已上传的资料 |
-| DELETE | `/api/v1/knowledge/{doc_id}?user_id=` | 删除当前用户的资料 |
-| POST | `/api/v1/knowledge/admin/upload` | 管理端上传城市攻略（需 `X-Admin-Token`） |
-
-**规划请求体示例**：
-
-```json
-{
-  "city": "青岛",
-  "start_date": "2026-08-20",
-  "end_date": "2026-08-22",
-  "travel_days": 3,
-  "transportation": "公共交通",
-  "accommodation": "舒适型酒店",
-  "preferences": ["自然风光", "美食"],
-  "free_text_input": "希望旅行氛围浪漫、轻松、慢节奏",
-  "user_id": "浏览器匿名用户标识",
-  "session_id": "服务端会话 ID"
-}
-```
-
-**对话请求体示例**：
-
-```json
-{
-  "user_id": "浏览器匿名用户标识",
-  "session_id": "服务端会话 ID",
-  "message": "明天北京到上海的高铁还有票吗？",
-  "city": "上海",
-  "regenerate": false
-}
-```
-
-**SSE 事件协议**：
-
-```jsonc
-{"type": "node_start", "node": "weather_tool_node", "label": "正在查询天气..."}
-{"type": "node_end",   "node": "weather_tool_node", "payload": {"weather_count": 4}}
-{"type": "node_end",   "node": "evaluation_node",   "payload": {"passed": true, "round": 1}}
-{"type": "node_error", "node": "plan_node", "message": "...", "retry": true}
-{"type": "done", "success": true, "message": "生成成功", "data": {"...": "TripPlan"}}
-```
 
 ## 📚 知识库
 
@@ -365,6 +399,35 @@ Cross-Encoder 不可用（欠费、限流、网络）时自动回退 RRF 融合�
 - **去重与隔离**：同一内容重复上传会直接返回已有记录；资料按浏览器匿名 `user_id` 隔离，仅本人可见。
 - **生效方式**：写入后立即可检索，无需重启后端（Milvus 写入后会 flush）。
 
+## 📊 评测与可观测
+
+项目内置检索与对话两套离线评测，以及运行期指标看板。启动前后端后访问 `http://127.0.0.1:5173/admin`，输入 `KNOWLEDGE_ADMIN_TOKEN`（请求头 `X-Admin-Token`）即可使用。
+
+| 评测入口 · 数据集概览 | 检索评测 · 指标总览 |
+| :---: | :---: |
+| ![评测入口](pic/评测入口.png) | ![检索评测结果](pic/评测结果1.png) |
+
+| HyDE 消融与分类型指标 | 跨城过滤校验与逐条明细 |
+| :---: | :---: |
+| ![HyDE 消融](pic/评测结果2.png) | ![逐条明细](pic/评测结果3.png) |
+
+| 运行监控 · LLM / 缓存 / 节点指标 | 运行监控 · HTTP 请求与历史报告 |
+| :---: | :---: |
+| ![运行监控](pic/运行监控1.png) | ![历史报告](pic/运行监控2.png) |
+
+- **检索评测**：支持 `base / hard / all` 数据集、HyDE `off / on / both` 消融、精排开关与强制重建；报告展示 Recall@1/5、MRR@10、nDCG@10、P50/P95 延迟、调用量、按类型分组指标，以及跨城同名景点的城市过滤校验。
+- **对话评测**：80 条意图用例，覆盖精准 / 模糊 / 危险请求，规则校验 + 大模型评分。
+- **运行指标**：LLM 延迟 / token、缓存命中率、精排熔断、LangGraph 节点耗时、MCP / 知识库工具耗时；Prometheus 可在根路径 `/metrics` 抓取，管理端看板读取同源的进程内快照。
+- **隔离执行**：管理端评测通过独立 Python 子进程复用评测 CLI，不在 API 进程内修改 Milvus 全局配置；同类型评测同时只允许一个任务。
+
+```bash
+# 检索评测（需 Milvus；base 100 / hard 48 / all 148）
+python -m backend.app.evaluation.retrieval_eval --dataset all
+
+# 对话评测（80 条意图用例）
+python -m backend.app.evaluation.chat_eval
+```
+
 ## 📁 项目结构
 
 ```text
@@ -375,42 +438,52 @@ travel_agents/
 │   │   ├── config.py                # Settings 聚合根（按模块分组的内部类）
 │   │   ├── logging.py               # structlog 配置与 get_logger
 │   │   ├── database.py              # SQLAlchemy async + LangGraph checkpointer
+│   │   ├── runtime.py               # Windows ProactorEventLoop 工厂
+│   │   ├── metrics.py               # Prometheus 指标 + 进程内看板快照
 │   │   ├── deps.py                  # get_db / 各 service 的 Depends
 │   │   ├── exceptions.py            # AppError 体系
 │   │   └── exception_handlers.py    # 全局 JSON 错误信封
 │   ├── integrations/
-│   │   ├── llm.py                   # LLM / Embedding 单例
+│   │   ├── llm.py                   # LLM / Embedding 单例与指标回调
 │   │   ├── milvus.py                # Milvus 集合 / 稠密+BM25 / 精排 / CRUD
+│   │   ├── memory_milvus.py         # 长期记忆集合（user_memories）
+│   │   ├── cache.py                 # Redis 缓存与工具结果包装
 │   │   └── mcp.py                   # 高德 / 时间 / 12306 MCP 管理
 │   ├── agent/
-│   │   ├── graph.py                 # LangGraph 图定义（核心）
+│   │   ├── graph.py                 # 行程规划 LangGraph 图定义（核心）
 │   │   ├── state.py                 # PlannerState 状态定义与 reducer
 │   │   ├── constants.py             # 节点文案 / 轮次 / 并发等常量
 │   │   ├── prompts.py               # 各节点提示词
 │   │   └── nodes/                   # attraction / hotel / weather / rag / plan ...
 │   ├── modules/
 │   │   ├── health/                  # 健康检查
-│   │   ├── sessions/                # 用户 / 会话 / 消息（models/repository/service/router）
-│   │   ├── chat/                    # Agent / history(checkpointer) / SSE service
+│   │   ├── admin/                   # 管理端：评测运行 / 报告历史 / 指标快照
+│   │   ├── sessions/                # 用户 / 会话（models/repository/service/router）
+│   │   ├── chat/                    # 对话 SSE + checkpointer 历史
+│   │   │   └── workflow/            # 意图路由 / 闲聊子图 / 工具循环 / 安全围栏
+│   │   ├── memory/                  # 分层记忆：摘要 / 事实 / 任务状态 / 长期记忆
 │   │   ├── knowledge/               # 知识库：解析 / Markdown 优化 / 父子块 / 混合检索 / ingest_cli
-│   │   └── trip/                    # 行程规划（models/repository/service/router/schemas）
+│   │   └── trip/                    # 行程规划 + 对话预填（models/repository/service/router/schemas）
+│   ├── evaluation/                  # chat_eval / retrieval_eval + datasets + results
 │   ├── scripts/                     # init_db.py / init_milvus.py
 │   └── data/
 │       ├── corpus/                  # 城市攻略语料（txt，11 城）
 │       └── md5_milvus.text          # Milvus 入库 MD5 账本（运行时生成）
 ├── frontend/                        # Vue 3 + Vite 前端
 │   ├── src/
-│   │   ├── views/                   # Landing / QuickStart / Chat / Result
+│   │   ├── views/                   # Landing / QuickStart / Chat / Result / Admin
 │   │   ├── components/
 │   │   │   ├── site/                # 站点页头 / 页脚 / 纸张纹理 / 印章
 │   │   │   ├── sketchbook/          # 翻书 Book / 表单 Form / 进度 Progress
-│   │   │   └── chat/                # 会话列表 / 消息 / 输入框 / 知识库抽屉
+│   │   │   ├── chat/                # 会话列表 / 消息 / 输入框 / 知识库抽屉
+│   │   │   └── admin/               # 评测面板 / 指标看板 / 历史报告
 │   │   ├── composables/             # usePaperTheme（纸张主题）
 │   │   ├── assets/sketchbook/       # 11 城手绘插画
 │   │   ├── data/                    # sketchbookCities（选城配置）
 │   │   ├── services/api.ts          # /api/v1 接口与 SSE 消费
+│   │   ├── services/admin.ts        # 管理端接口（X-Admin-Token）
 │   │   ├── store.ts                 # 轻量 reactive store（userId / activeSession）
-│   │   ├── styles/                  # 全局 / 站点 / 翻书样式
+│   │   ├── styles/                  # 全局 / 站点 / 翻书 / 管理端样式
 │   │   └── types/                   # TS 类型定义
 │   └── .env                         # VITE_AMAP_WEB_JS_KEY
 ├── pic/                             # README 截图

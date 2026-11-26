@@ -89,8 +89,6 @@ class ChatService:
         config = chat_config(session.id)
 
         if request.regenerate:
-            # 重新生成要拿到新回复，绕过 Redis 里的对话回复缓存
-            config["configurable"]["skip_cache"] = True
             # 补齐记忆节点需要的归属字段（首轮重新生成时状态里可能还没有）
             await agent.aupdate_state(
                 config,

@@ -10,12 +10,13 @@ import type {
   StreamEvent,
   TrainSearchResponse,
   TripPlanResponse,
+  TripPrefillResponse,
   TripRequest,
 } from '../types'
 
 const API_BASE = '/api/v1'
 
-const http = axios.create({
+export const http = axios.create({
   baseURL: API_BASE,
   // Agent 真实调用可能长达 5 分钟，超时宁长勿短
   timeout: 600000,
@@ -24,6 +25,19 @@ const http = axios.create({
 /** 生成旅行计划（一次性返回完整计划，作为流式接口的兜底） */
 export async function generateTripPlan(req: TripRequest, signal?: AbortSignal): Promise<TripPlanResponse> {
   const { data } = await http.post<TripPlanResponse>('/trip/plan', req, { signal })
+  return data
+}
+
+/** 从对话提取快速开始表单预填（会话记忆 + 最近对话 + 快模型结构化）。 */
+export async function suggestTripPrefill(
+  req: { userId: string; sessionId: string },
+  signal?: AbortSignal,
+): Promise<TripPrefillResponse> {
+  const { data } = await http.post<TripPrefillResponse>(
+    '/trip/prefill',
+    { user_id: req.userId, session_id: req.sessionId },
+    { signal },
+  )
   return data
 }
 

@@ -350,6 +350,9 @@ onMounted(() => {
       if (i >= 0) {
         activeIndex.value = i
         form.city = cities[i].name
+      } else {
+        // 对话里提到的城市可能不在翻书城市列表里，仍按用户说的城市规划
+        form.city = p.city
       }
     }
     if (p.start_date && p.end_date) {

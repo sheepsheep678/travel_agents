@@ -10,6 +10,7 @@ from langchain_community.embeddings import DashScopeEmbeddings
 
 from backend.app.core.config import settings
 from backend.app.core.logging import get_logger
+from backend.app.core.metrics import LLMMetricsCallback
 
 logger = get_logger(__name__)
 
@@ -77,7 +78,16 @@ def _build_model(profile: str):
         max_tokens=kwargs.get("max_tokens"),
         extra_body=extra_body,
     )
-    return init_chat_model(**kwargs)
+    model = init_chat_model(**kwargs)
+    # 挂载指标回调：所有 invoke / stream / bind_tools / structured_output
+    # 最终都会走该模型实例，因此能统一统计延迟与 token 用量。
+    try:
+        model.callbacks = [
+            LLMMetricsCallback(model=str(kwargs["model"]), profile=profile)
+        ]
+    except Exception as exc:  # pragma: no cover - 非标准 provider 时忽略
+        logger.warning("LLM 指标回调挂载失败", profile=profile, error=str(exc))
+    return model
 
 
 def get_llm():

@@ -11,13 +11,18 @@ from __future__ import annotations
 import asyncio
 from contextlib import asynccontextmanager
 
-from fastapi import FastAPI
+from fastapi import FastAPI, Response
 from fastapi.middleware.cors import CORSMiddleware
 
 from backend.app.core.config import settings, validate_config
 from backend.app.core.database import close_database, init_database
 from backend.app.core.exception_handlers import register_exception_handlers
 from backend.app.core.logging import get_logger, setup_logging
+from backend.app.core.metrics import (
+    PROMETHEUS_AVAILABLE,
+    instrument_app,
+    prometheus_payload,
+)
 from backend.app.integrations.cache import close_cache, init_cache
 from backend.app.integrations.mcp import close_mcp, init_mcp_async
 from backend.app.integrations.memory_milvus import (
@@ -25,6 +30,7 @@ from backend.app.integrations.memory_milvus import (
     memory_milvus_error,
 )
 from backend.app.integrations.milvus import close_milvus, init_milvus, milvus_error
+from backend.app.modules.admin.router import router as admin_router
 from backend.app.modules.chat.router import router as chat_router
 from backend.app.modules.health.router import router as health_router
 from backend.app.modules.knowledge.router import router as knowledge_router
@@ -121,13 +127,29 @@ def create_app() -> FastAPI:
     )
 
     register_exception_handlers(app)
+    instrument_app(app)
 
     app.include_router(health_router, prefix="/api/v1")
+    app.include_router(admin_router, prefix="/api/v1")
     app.include_router(sessions_router, prefix="/api/v1")
     app.include_router(chat_router, prefix="/api/v1")
     app.include_router(knowledge_router, prefix="/api/v1")
     app.include_router(memory_router, prefix="/api/v1")
     app.include_router(trip_router, prefix="/api/v1")
+
+    @app.get(settings.metrics.path or "/metrics", include_in_schema=False)
+    async def prometheus_metrics():
+        """Prometheus 抓取端点；未启用或未安装 prometheus_client 时返回 503。"""
+        payload = prometheus_payload()
+        if payload is None:
+            reason = (
+                "prometheus_client 未安装"
+                if not PROMETHEUS_AVAILABLE
+                else "METRICS_ENABLED=false"
+            )
+            return Response(content=reason, media_type="text/plain", status_code=503)
+        body, content_type = payload
+        return Response(content=body, media_type=content_type)
 
     @app.get("/", tags=["system"], summary="服务信息")
     async def root():
@@ -136,6 +158,7 @@ def create_app() -> FastAPI:
             "version": settings.app.version,
             "docs": "/docs",
             "api_prefix": "/api/v1",
+            "metrics": settings.metrics.path if settings.metrics.enabled else None,
         }
 
     return app

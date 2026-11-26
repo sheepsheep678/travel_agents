@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import asyncio
-import json
 import re
 import uuid
 from typing import Any, Optional
@@ -16,14 +15,13 @@ from langchain_core.messages import (
     SystemMessage,
     ToolMessage,
 )
-from langgraph.config import get_config, get_stream_writer
+from langgraph.config import get_stream_writer
 from langgraph.graph import END
 from langgraph.types import Command
 
 from backend.app.core.config import settings
 from backend.app.core.database import get_session_factory
 from backend.app.core.logging import get_logger
-from backend.app.integrations.cache import cache_get_json, cache_set_json, make_key
 from backend.app.integrations.mcp import get_mcp_tool
 from backend.app.modules.chat.workflow.prompts import (
     CHITCHAT_SYSTEM,
@@ -139,14 +137,6 @@ def _last_ai_message(messages: list[AnyMessage]) -> Optional[AIMessage]:
     return None
 
 
-def _skip_reply_cache() -> bool:
-    """重新生成时由 ChatService 注入 skip_cache，绕过对话回复缓存。"""
-    try:
-        return bool(get_config().get("configurable", {}).get("skip_cache"))
-    except Exception:
-        return False
-
-
 def _merge_chunks(chunks: list[Any]) -> Any:
     """把流式片段合并成一条完整消息。"""
     if not chunks:
@@ -155,19 +145,6 @@ def _merge_chunks(chunks: list[Any]) -> Any:
     for chunk in chunks[1:]:
         merged = merged + chunk
     return merged
-
-
-def _fingerprint(messages: list[AnyMessage]) -> str:
-    """把提示词上下文压缩成稳定指纹，用于回复缓存。"""
-    rows = [
-        [
-            message.type,
-            _chunk_text(message),
-            [call.get("name") for call in (getattr(message, "tool_calls", None) or [])],
-        ]
-        for message in messages
-    ]
-    return json.dumps(rows, ensure_ascii=False, default=str)
 
 
 def _sanitize_history(messages: list[AnyMessage]) -> list[AnyMessage]:
@@ -238,21 +215,6 @@ def _memory_block(state: ChatState | ChitchatState) -> str:
     if context:
         parts.append(context)
     return "\n\n".join(parts)
-
-
-def _memory_signature(state: ChatState | ChitchatState) -> str:
-    """记忆上下文指纹，避免摘要变化后命中旧回复缓存。"""
-    return json.dumps(
-        {
-            "summary": state.get("memory_summary") or "",
-            "facts": state.get("memory_facts") or {},
-            "task": state.get("memory_task_state") or {},
-            "context": state.get("memory_context") or "",
-        },
-        ensure_ascii=False,
-        sort_keys=True,
-        default=str,
-    )
 
 
 def build_working_messages(
@@ -425,17 +387,6 @@ async def chitchat_reply_node(state: ChitchatState, *, llm: Any) -> dict:
         }
 
     messages = build_working_messages(state, CHITCHAT_SYSTEM)
-    history = messages[1:]
-    cache_key = make_key(
-        "chat", "chitchat", _fingerprint(history), _memory_signature(state)
-    )
-    cached = None if _skip_reply_cache() else await cache_get_json(cache_key)
-    if isinstance(cached, str) and cached:
-        return {
-            "messages": [AIMessage(content=cached, id=_new_id())],
-            "chitchat_count": count,
-            "pending_reply": cached,
-        }
 
     parts: list[str] = []
     try:
@@ -447,7 +398,6 @@ async def chitchat_reply_node(state: ChitchatState, *, llm: Any) -> dict:
         logger.warning("闲聊回复生成失败", error=str(exc))
 
     reply = "".join(parts).strip() or CHITCHAT_FALLBACK_REPLY
-    await cache_set_json(cache_key, reply)
     return {
         "messages": [AIMessage(content=reply, id=_new_id())],
         "chitchat_count": count,
@@ -599,25 +549,6 @@ async def agent_llm_node(
     messages = build_working_messages(state, system_prompt)
     if knowledge:
         messages[0] = SystemMessage(content=f"{messages[0].content}\n\n{knowledge}")
-    history = messages[1:]
-
-    cache_key = make_key(
-        "chat",
-        workflow,
-        state.get("city") or "",
-        _fingerprint(history),
-        _memory_signature(state),
-        # 预取资料不同则不能复用旧回复
-        knowledge,
-    )
-    cached = None if _skip_reply_cache() else await cache_get_json(cache_key)
-    if isinstance(cached, str) and cached:
-        logger.info("对话回复命中缓存", workflow=workflow)
-        _emit(writer, cached)
-        update: dict[str, Any] = {"messages": [AIMessage(content=cached, id=_new_id())]}
-        if knowledge:
-            update["knowledge_context"] = knowledge
-        return update
 
     # 达到工具轮次上限后不再绑定工具，并提示模型基于已有信息作答
     reached_limit = int(state.get("tool_round") or 0) >= settings.chat.max_tool_rounds
@@ -653,8 +584,6 @@ async def agent_llm_node(
     if not content.strip() and not tool_calls:
         content = "抱歉，我暂时没有生成内容，请再试一次。"
         _emit(writer, content)
-    elif not tool_calls:
-        await cache_set_json(cache_key, content)
     update = {
         "messages": [AIMessage(content=content, tool_calls=tool_calls, id=_new_id())]
     }

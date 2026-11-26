@@ -15,8 +15,9 @@ frontend/.env
 .idea/
 .claude/
 
-
+#知识库数据
 .pdf
 data
+docs
 # 评测结果（运行时生成）
 backend/app/evaluation/results/

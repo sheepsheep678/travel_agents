@@ -28,7 +28,7 @@
 <script setup lang="ts">
 import SealMark from './SealMark.vue'
 
-type NavKey = 'home' | 'quick-start' | 'chat'
+type NavKey = 'home' | 'quick-start' | 'chat' | 'admin'
 
 defineProps<{ active?: NavKey }>()
 
@@ -36,5 +36,6 @@ const nav: { key: NavKey; label: string; to: string }[] = [
   { key: 'home', label: '首页', to: '/' },
   { key: 'quick-start', label: '快速开始', to: '/quick-start' },
   { key: 'chat', label: 'AI 对话', to: '/chat' },
+  { key: 'admin', label: '管理端', to: '/admin' },
 ]
 </script>

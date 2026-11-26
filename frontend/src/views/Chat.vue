@@ -51,7 +51,8 @@
               :key="m.id"
               :message="m"
               :can-regenerate="m.role === 'assistant' && m.id === lastAssistantId() && m.status === 'done'"
-              :can-plan="!!sessionCity && m.id === lastAssistantId() && m.status === 'done'"
+              :can-plan="hasUserMessage && m.id === lastAssistantId() && m.status === 'done'"
+              :plan-loading="planLoading"
               @regenerate="regenerate"
               @go-plan="goPlan"
             />
@@ -94,9 +95,15 @@ import {
   listSessions,
   resumeChat,
   streamChat,
+  suggestTripPrefill,
 } from '../services/api'
 import { sketchbookCities } from '../data/sketchbookCities'
-import type { ChatMessage, ChatSession, ChatStreamEvent } from '../types'
+import type {
+  ChatMessage,
+  ChatSession,
+  ChatStreamEvent,
+  TripPrefill,
+} from '../types'
 
 usePaperTheme()
 
@@ -138,6 +145,10 @@ const sessionCity = computed(() => {
   }
   return activeSession.value?.city || ''
 })
+
+const hasUserMessage = computed(() =>
+  messages.value.some((m) => m.role === 'user'),
+)
 
 function errorText(e: any, fallback: string): string {
   return e?.response?.data?.message || e?.message || fallback
@@ -455,16 +466,53 @@ async function regenerate() {
   await runAssistant(session, '', true)
 }
 
-function goPlan() {
+const planLoading = ref(false)
+
+/**
+ * 进入快速开始前，先从会话记忆 + 最近对话提取表单字段。
+ * 后端失败会自己降级；前端再兜底用最后一句用户消息，保证一定能进表单。
+ */
+async function goPlan() {
+  const sessionId = chatStore.activeId
+  if (!sessionId || planLoading.value) return
+
+  planLoading.value = true
   const lastUser = lastUserContent()
-  const preferences = PREF_KEYS.filter((k) => lastUser.includes(k))
-  tripStore.prefill = {
+  const localPrefs = PREF_KEYS.filter((k) => lastUser.includes(k))
+  let prefill: TripPrefill = {
     city: sessionCity.value || undefined,
-    preferences: preferences.length ? preferences : undefined,
-    free_text_input: lastUser.slice(0, 120),
+    preferences: localPrefs.length ? localPrefs : undefined,
+    free_text_input: lastUser.slice(0, 120) || undefined,
     user_id: userId,
-    session_id: chatStore.activeId || undefined,
+    session_id: sessionId,
   }
+
+  try {
+    const { prefill: remote } = await suggestTripPrefill({ userId, sessionId })
+    const preferences = Array.from(
+      new Set([...(remote.preferences || []), ...localPrefs]),
+    )
+    prefill = {
+      city: remote.city || sessionCity.value || undefined,
+      origin_city: remote.origin_city || undefined,
+      start_date: remote.start_date || undefined,
+      end_date: remote.end_date || undefined,
+      travel_days: (remote.travel_days ?? 0) > 0 ? remote.travel_days : undefined,
+      transportation: remote.transportation || undefined,
+      accommodation: remote.accommodation || undefined,
+      preferences: preferences.length ? preferences : undefined,
+      free_text_input:
+        remote.free_text_input || lastUser.slice(0, 120) || undefined,
+      user_id: userId,
+      session_id: sessionId,
+    }
+  } catch {
+    // 网络/服务异常：保留本地兜底预填，不阻断进入表单
+  } finally {
+    planLoading.value = false
+  }
+
+  tripStore.prefill = prefill
   router.push('/quick-start')
 }
 

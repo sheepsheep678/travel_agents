@@ -1,0 +1,483 @@
+/* ========== 管理端：评测与可观测性看板 ==========
+ * 复用纸墨 token（--paper / --ink / --hairline / --earth / --seal），
+ * 只新增 .admin-* 前缀，不影响首页、对话与结果页。
+ */
+
+.admin-main {
+  padding-top: 56px;
+  padding-bottom: 80px;
+}
+
+.admin-hero {
+  display: grid;
+  gap: 12px;
+  padding-bottom: 28px;
+  border-bottom: 1px solid var(--hairline);
+}
+.admin-kicker {
+  margin: 0;
+  font-size: 11px;
+  letter-spacing: var(--track-caps);
+  text-transform: uppercase;
+  color: var(--earth);
+}
+.admin-title {
+  margin: 0;
+  font-family: var(--display);
+  font-size: clamp(34px, 4.2vw, 52px);
+  font-weight: 400;
+  letter-spacing: 0.02em;
+}
+.admin-sub {
+  max-width: 760px;
+  margin: 0;
+  color: var(--ink-soft);
+  font-size: 14px;
+  line-height: 1.8;
+}
+.admin-token-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px;
+  margin-top: 6px;
+}
+.admin-token-state {
+  font-size: 12px;
+  color: var(--ink-soft);
+}
+.admin-token-state.ok {
+  color: #3f6b45;
+}
+
+.admin-section {
+  margin-top: 28px;
+  padding: 24px;
+  border: 1px solid var(--hairline);
+  background: rgba(255, 255, 255, 0.24);
+}
+.admin-section-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 18px;
+}
+.admin-section-head h2 {
+  margin: 0;
+  font-family: var(--display);
+  font-size: 24px;
+  font-weight: 400;
+  letter-spacing: 0.03em;
+}
+.admin-section-head p {
+  margin: 0;
+  color: var(--ink-soft);
+  font-size: 12.5px;
+}
+.admin-section-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.admin-alert {
+  margin-top: 18px;
+  padding: 12px 14px;
+  border: 1px solid rgba(179, 64, 42, 0.4);
+  background: rgba(179, 64, 42, 0.07);
+  color: var(--seal);
+  font-size: 13px;
+  line-height: 1.6;
+}
+.admin-alert.info {
+  border-color: rgba(154, 106, 62, 0.4);
+  background: rgba(154, 106, 62, 0.07);
+  color: var(--earth);
+}
+
+/* ---- 表单控件 ---- */
+.admin-input,
+.admin-select {
+  height: 34px;
+  padding: 0 10px;
+  border: 1px solid var(--hairline);
+  border-radius: 2px;
+  background: rgba(255, 255, 255, 0.5);
+  color: var(--ink);
+  font-family: var(--font);
+  font-size: 13px;
+  outline: none;
+  transition: border-color 0.2s;
+}
+.admin-input:focus,
+.admin-select:focus {
+  border-color: var(--ink);
+}
+.admin-input.token {
+  width: min(320px, 60vw);
+}
+.admin-input.num {
+  width: 84px;
+}
+.admin-btn {
+  height: 34px;
+  padding: 0 16px;
+  border: 1px solid var(--ink);
+  border-radius: 2px;
+  background: var(--ink);
+  color: var(--paper);
+  font-family: var(--font);
+  font-size: 12.5px;
+  letter-spacing: 0.05em;
+  cursor: pointer;
+  transition: opacity 0.2s, background 0.2s, color 0.2s;
+}
+.admin-btn:hover:not(:disabled) {
+  opacity: 0.86;
+}
+.admin-btn:disabled {
+  opacity: 0.36;
+  cursor: not-allowed;
+}
+.admin-btn-ghost {
+  background: transparent;
+  color: var(--ink);
+}
+.admin-btn-ghost:hover:not(:disabled) {
+  background: var(--ink);
+  color: var(--paper);
+}
+.admin-btn-danger {
+  border-color: var(--seal);
+  background: transparent;
+  color: var(--seal);
+}
+.admin-btn-danger:hover:not(:disabled) {
+  background: var(--seal);
+  color: var(--paper);
+}
+.admin-check {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12.5px;
+  color: var(--ink-soft);
+  cursor: pointer;
+  user-select: none;
+}
+.admin-check input {
+  accent-color: var(--ink);
+}
+.admin-field {
+  display: grid;
+  gap: 5px;
+}
+.admin-field > span {
+  font-size: 11px;
+  letter-spacing: 0.08em;
+  color: var(--ink-soft);
+  text-transform: uppercase;
+}
+.admin-form-grid {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-end;
+  gap: 14px 18px;
+}
+.admin-form-note {
+  width: 100%;
+  margin: 0;
+  color: var(--ink-soft);
+  font-size: 12px;
+  line-height: 1.7;
+}
+
+/* ---- KPI ---- */
+.admin-kpi-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+  gap: 12px;
+}
+.admin-kpi {
+  padding: 14px 16px;
+  border: 1px solid var(--hairline);
+  background: rgba(255, 255, 255, 0.35);
+}
+.admin-kpi-label {
+  margin: 0 0 6px;
+  font-size: 11px;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--ink-soft);
+}
+.admin-kpi-value {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 24px;
+  line-height: 1.15;
+  color: var(--ink);
+}
+.admin-kpi-note {
+  margin: 6px 0 0;
+  font-size: 11.5px;
+  color: var(--ink-faint);
+}
+
+/* ---- 数据集卡片 ---- */
+.admin-dataset-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(230px, 1fr));
+  gap: 12px;
+}
+.admin-dataset-card {
+  padding: 16px;
+  border: 1px solid var(--hairline);
+  background: rgba(255, 255, 255, 0.3);
+}
+.admin-dataset-card h3 {
+  margin: 0 0 4px;
+  font-family: var(--display);
+  font-size: 18px;
+  font-weight: 400;
+}
+.admin-dataset-card p {
+  margin: 0;
+  font-size: 12px;
+  color: var(--ink-soft);
+  line-height: 1.6;
+  word-break: break-all;
+}
+.admin-chip-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin: 10px 0 0;
+  padding: 0;
+  list-style: none;
+}
+.admin-chip {
+  padding: 2px 7px;
+  border: 1px solid var(--hairline);
+  border-radius: 999px;
+  font-size: 11px;
+  color: var(--ink-soft);
+  background: rgba(255, 255, 255, 0.32);
+}
+.admin-sample {
+  margin-top: 10px;
+  font-size: 12px;
+  color: var(--ink-soft);
+}
+.admin-sample summary {
+  cursor: pointer;
+  color: var(--earth);
+}
+.admin-sample pre {
+  margin: 8px 0 0;
+  padding: 10px;
+  max-height: 180px;
+  overflow: auto;
+  background: rgba(43, 39, 33, 0.05);
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 11px;
+  line-height: 1.6;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+/* ---- 运行状态 ---- */
+.admin-run-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px;
+  margin: 16px 0 10px;
+}
+.admin-status {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 3px 10px;
+  border-radius: 999px;
+  font-size: 11.5px;
+  letter-spacing: 0.06em;
+  border: 1px solid var(--hairline);
+  color: var(--ink-soft);
+}
+.admin-status::before {
+  content: '';
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: currentColor;
+}
+.admin-status.running {
+  color: var(--earth);
+  border-color: rgba(154, 106, 62, 0.4);
+}
+.admin-status.succeeded {
+  color: #3f6b45;
+  border-color: rgba(63, 107, 69, 0.35);
+}
+.admin-status.failed {
+  color: var(--seal);
+  border-color: rgba(179, 64, 42, 0.35);
+}
+.admin-status.cancelled {
+  color: var(--ink-soft);
+}
+.admin-run-meta {
+  font-size: 12px;
+  color: var(--ink-soft);
+}
+.admin-log {
+  margin: 10px 0 0;
+  padding: 12px 14px;
+  max-height: 240px;
+  overflow: auto;
+  border: 1px solid var(--hairline);
+  background: rgba(43, 39, 33, 0.055);
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 11px;
+  line-height: 1.65;
+  white-space: pre-wrap;
+  word-break: break-word;
+  color: var(--ink-soft);
+}
+
+/* ---- 表格 ---- */
+.admin-table-wrap {
+  overflow-x: auto;
+  border: 1px solid var(--hairline);
+}
+.admin-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 12px;
+  line-height: 1.5;
+}
+.admin-table th,
+.admin-table td {
+  padding: 9px 11px;
+  border-bottom: 1px solid var(--hairline);
+  text-align: left;
+  vertical-align: top;
+  white-space: nowrap;
+}
+.admin-table th {
+  background: rgba(43, 39, 33, 0.045);
+  font-weight: 500;
+  font-size: 11px;
+  letter-spacing: 0.06em;
+  color: var(--ink-soft);
+  text-transform: uppercase;
+}
+.admin-table tr:last-child td {
+  border-bottom: none;
+}
+.admin-table td.num {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  text-align: right;
+}
+.admin-table td.wrap {
+  white-space: normal;
+  min-width: 220px;
+  max-width: 420px;
+  word-break: break-word;
+}
+.admin-table tr:hover td {
+  background: rgba(43, 39, 33, 0.025);
+}
+.admin-pass {
+  color: #3f6b45;
+}
+.admin-fail {
+  color: var(--seal);
+}
+.admin-empty {
+  padding: 28px 10px;
+  text-align: center;
+  color: var(--ink-faint);
+  font-size: 12.5px;
+}
+.admin-subtable-title {
+  margin: 20px 0 8px;
+  font-size: 12px;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--ink-soft);
+}
+
+/* ---- 条形图 ---- */
+.admin-bars {
+  display: grid;
+  gap: 8px;
+}
+.admin-bar-row {
+  display: grid;
+  grid-template-columns: minmax(120px, 220px) 1fr 74px;
+  align-items: center;
+  gap: 10px;
+  font-size: 12px;
+}
+.admin-bar-track {
+  height: 8px;
+  border-radius: 99px;
+  background: rgba(43, 39, 33, 0.08);
+  overflow: hidden;
+}
+.admin-bar-fill {
+  height: 100%;
+  border-radius: 99px;
+  background: linear-gradient(90deg, var(--earth), rgba(154, 106, 62, 0.55));
+}
+.admin-bar-value {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 11px;
+  color: var(--ink-soft);
+  text-align: right;
+}
+.admin-bar-label {
+  color: var(--ink-soft);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* ---- 历史报告 ---- */
+.admin-report-name {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 11.5px;
+  color: var(--ink);
+  background: none;
+  border: none;
+  padding: 0;
+  cursor: pointer;
+  text-align: left;
+  text-decoration: underline;
+  text-underline-offset: 3px;
+  text-decoration-color: var(--hairline);
+}
+.admin-report-name:hover {
+  color: var(--earth);
+  text-decoration-color: var(--earth);
+}
+
+.admin-grid-two {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(320px, 1fr));
+  gap: 18px;
+}
+
+@media (max-width: 720px) {
+  .admin-main {
+    padding-top: 36px;
+  }
+  .admin-section {
+    padding: 18px;
+  }
+  .admin-bar-row {
+    grid-template-columns: minmax(90px, 140px) 1fr 64px;
+  }
+}

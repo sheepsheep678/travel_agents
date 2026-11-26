@@ -171,6 +171,13 @@ export interface TripPrefill {
   session_id?: string
 }
 
+/** 后端从对话提取的表单预填结果 */
+export interface TripPrefillResponse {
+  success: boolean
+  source: 'llm' | 'fallback'
+  prefill: TripPrefill
+}
+
 /* ---------------- AI 对话 ---------------- */
 
 export type ChatRole = 'user' | 'assistant'
@@ -281,4 +288,156 @@ export interface KnowledgeConfigResponse {
   success: boolean
   max_file_mb: number
   max_text_chars: number
+}
+
+/* ---------------- 管理端：评测与指标 ---------------- */
+
+export interface AdminDatasetSample {
+  id: string
+  type: string
+  city: string
+  title: string
+  query: string
+  text_preview: string
+  filter?: string
+}
+
+export interface AdminRetrievalDataset {
+  key: 'base' | 'hard' | 'all'
+  file: string
+  count: number
+  sha256: string
+  types: Record<string, number>
+  samples: AdminDatasetSample[]
+}
+
+export interface AdminChatDataset {
+  file: string
+  count: number
+  sha256: string
+  categories: Record<string, number>
+  samples: AdminDatasetSample[]
+}
+
+export interface AdminDatasetsResponse {
+  success: boolean
+  retrieval: AdminRetrievalDataset[]
+  chat: AdminChatDataset
+}
+
+export type EvalKind = 'retrieval' | 'chat'
+export type EvalRunStatus = 'running' | 'succeeded' | 'failed' | 'cancelled'
+export type RetrievalDatasetKey = 'base' | 'hard' | 'all'
+
+export interface AdminRunOptions {
+  kind: EvalKind
+  dataset: RetrievalDatasetKey
+  top_k: number
+  limit: number
+  rerank: boolean
+  hyde: 'off' | 'on' | 'both'
+  rebuild: boolean
+  hyde_concurrency: number
+  category: '' | 'precise' | 'fuzzy' | 'dangerous'
+  concurrency: number
+  judge: boolean
+}
+
+export interface AdminRun {
+  id: string
+  kind: EvalKind
+  status: EvalRunStatus
+  options: AdminRunOptions
+  log: string[]
+  report_name?: string | null
+  error?: string | null
+  returncode?: number | null
+  started_at: string
+  finished_at?: string | null
+}
+
+export interface AdminRunStartResponse {
+  success: boolean
+  run: AdminRun
+}
+
+export interface AdminRunListResponse {
+  success: boolean
+  runs: AdminRun[]
+}
+
+export interface AdminRunDetailResponse {
+  success: boolean
+  run: AdminRun
+  report_summary?: Record<string, unknown> | null
+}
+
+export interface AdminReportItem {
+  name: string
+  kind: EvalKind
+  generated_at: string
+  duration_seconds?: number | null
+  size_bytes: number
+  headline?: Record<string, any>
+  by_category?: Record<string, any>
+  dataset?: string
+  queries?: number
+  top_k?: number
+  rerank?: boolean
+  hyde_mode?: string
+  usage?: Record<string, any>
+}
+
+export interface AdminReportListResponse {
+  success: boolean
+  items: AdminReportItem[]
+}
+
+export interface AdminReportDetailResponse {
+  success: boolean
+  name: string
+  kind: EvalKind
+  report: Record<string, any>
+}
+
+export interface AdminMetricSeries {
+  labels: string[]
+  name: string
+  count: number
+  total_ms: number
+  avg_ms: number
+}
+
+export interface AdminMetrics {
+  enabled: boolean
+  prometheus_available: boolean
+  generated_at: string
+  llm: {
+    requests: { model: string; profile: string; status: string; count: number }[]
+    latency: { model: string; profile: string; count: number; avg_ms: number }[]
+    tokens: { model: string; profile: string; kind: string; source: string; tokens: number }[]
+    total_requests: number
+    total_tokens: number
+  }
+  cache: {
+    hits: number
+    misses: number
+    hit_rate: number
+    by_namespace: { namespace: string; result: string; count: number }[]
+  }
+  rerank: {
+    ok: number
+    disabled: number
+    circuit_open: number
+    circuit_breaker: number
+    total: number
+  }
+  nodes: AdminMetricSeries[]
+  tools: AdminMetricSeries[]
+  http: AdminMetricSeries[]
+}
+
+export interface AdminMetricsResponse {
+  success: boolean
+  metrics: AdminMetrics
 }

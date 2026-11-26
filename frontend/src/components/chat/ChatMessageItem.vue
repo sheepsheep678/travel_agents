@@ -17,7 +17,14 @@
         <div v-if="message.status === 'done' && message.content" class="msg-actions">
           <button @click="copy">{{ copied ? '已复制' : '复制' }}</button>
           <button v-if="canRegenerate" @click="$emit('regenerate')">重新生成</button>
-          <button v-if="canPlan" class="msg-plan" @click="$emit('goPlan')">用表单生成完整行程 →</button>
+          <button
+            v-if="canPlan"
+            class="msg-plan"
+            :disabled="planLoading"
+            @click="$emit('goPlan')"
+          >
+            {{ planLoading ? '正在整理对话偏好…' : '用表单生成完整行程 →' }}
+          </button>
         </div>
       </template>
     </div>
@@ -34,6 +41,7 @@ const props = defineProps<{
   message: ChatMessage
   canRegenerate?: boolean
   canPlan?: boolean
+  planLoading?: boolean
 }>()
 
 defineEmits<{ regenerate: []; goPlan: [] }>()
@@ -171,6 +179,12 @@ function legacyCopy(text: string) {
 .msg-actions .msg-plan:hover {
   border-color: var(--ink);
   background: rgba(255, 252, 244, 0.7);
+}
+.msg-actions .msg-plan:disabled {
+  cursor: progress;
+  color: var(--ink-faint);
+  border-color: var(--hairline);
+  background: transparent;
 }
 
 @media (max-width: 560px) {

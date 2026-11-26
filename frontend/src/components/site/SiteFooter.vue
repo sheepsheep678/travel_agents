@@ -11,6 +11,7 @@
           <router-link to="/">首页</router-link>
           <router-link to="/quick-start">快速开始</router-link>
           <router-link to="/chat">AI 对话</router-link>
+          <router-link to="/admin">管理端</router-link>
         </nav>
       </div>
       <p class="site-footer-copy">© 2026 旅迹智绘</p>

@@ -9,8 +9,9 @@
 - Backend: Python / FastAPI / LangGraph / LangChain / PostgreSQL（SQLAlchemy async + asyncpg）
 - Checkpointer: `langgraph-checkpoint-postgres` + `psycopg`（AsyncPostgresSaver）
 - Logging: structlog（彩色控制台 / 可选 JSON），只在 `main.py` 配置一次
+- Observability: Prometheus（`prometheus_client`，根路径 `/metrics`）+ 进程内指标快照（管理端看板）
 - RAG: Milvus 3.x（稠密 COSINE + BM25 稀疏向量 + jieba 分析器）+ 条件过滤 + RRF 融合 + DashScope `gte-rerank` Cross-Encoder 精排；父块存 PostgreSQL
-- Cache: Redis 8.x（Docker Desktop 单容器，`redis://127.0.0.1:6379`），TTL 60s 缓存工具结果 / 对话回复 / 向量检索结果
+- Cache: Redis 8.x（Docker Desktop 单容器，`redis://127.0.0.1:6379`），TTL 60s 缓存工具结果 / 会话历史 / 向量检索结果（对话回复不缓存）
 - Data Source: 高德地图 MCP（SSE）、时间 MCP（stdio）、12306 MCP（stdio，`npx -y 12306-mcp`）、Milvus（Docker Desktop，`http://127.0.0.1:19530`）、Redis（Docker Desktop）
 - Frontend: Vue 3 + TypeScript + Vite + Vue Router（`frontend/`）
 - State: `src/store.ts` 轻量 `reactive` store（**不是 Pinia**）；会话与消息以服务端为准
@@ -21,10 +22,11 @@
 ```
 backend/app/
   main.py                 # 唯一入口：structlog、lifespan、路由挂载、全局异常
-  core/                   # config / logging / database / deps / exceptions
+  core/                   # config / logging / database / deps / exceptions / metrics
   integrations/           # llm / milvus / mcp（外部服务适配）
   agent/                  # LangGraph 图、state、prompts、constants、nodes/
   modules/
+    admin/                # 管理端：评测运行 / 报告历史 / 指标快照
     health/               # GET /api/v1/health
     sessions/             # models / repository / schemas / service / router
     chat/                 # agent 工厂 / workflow（意图路由图）/ history / SSE service
@@ -54,7 +56,8 @@ backend/app/
 - 不经 HTTP，直接跑整张图调试（内置青岛 3 天示例）：`python -m backend.app.agent.graph`
 - 验证 MCP 工具加载（高德 / 时间 / 12306）：`python -m backend.app.integrations.mcp`
 - 对话评测（80 条意图用例，规则 + 大模型评分）：`python -m backend.app.evaluation.chat_eval`（`--limit / --category / --concurrency / --no-judge`）
-- 向量检索评测（100 对 query/文档，独立集合）：`python -m backend.app.evaluation.retrieval_eval`（需 Milvus；默认首次入库、后续只评测；`--rebuild` 强制重灌；`--no-rerank / --limit`）
+- 向量检索评测（base 100 / hard 48 / all 148）：`python -m backend.app.evaluation.retrieval_eval`（需 Milvus；`--dataset base|hard|all`；`--hyde off|on|both` 做消融；`--rebuild` 强制重灌；`--no-rerank / --limit / --output`）
+- 管理端页面（评测入口 + 指标看板）：`http://127.0.0.1:5173/admin`（需要 `KNOWLEDGE_ADMIN_TOKEN`）
 - 需要热重载时：`uvicorn backend.app.main:app --reload --loop backend.app.core.runtime:proactor_loop_factory`（Windows 下必须显式指定，见“事件循环”一节）
 
 本仓库没有自动化测试和 lint 脚本，不要假设存在 `pytest` / `npm test` 命令。
@@ -70,11 +73,13 @@ backend/app/
 | 模块 | 路径 | 说明 |
 | --- | --- | --- |
 | health | `GET /api/v1/health` | 数据库、checkpointer、Redis、Milvus（知识库/记忆集合）、各 MCP 服务状态 |
+| admin | `/api/v1/admin/*` | 管理端评测运行 / 报告历史 / 指标快照（需 `X-Admin-Token`） |
 | sessions | `/api/v1/sessions` | 创建 / ensure / 列表 / 详情 / 删除 |
 | chat | `POST /api/v1/chat/stream` | 对话 SSE（token / done / error） |
 | chat | `POST /api/v1/chat/resume`、`/api/v1/chat/cancel` | 断线按字符偏移续传 / 取消后台生成 |
 | knowledge | `/api/v1/knowledge/*` | 用户上传 / 列表 / 删除；管理端上传 |
 | memory | `/api/v1/memory/*` | 会话情景记忆 / 用户长期记忆的查看与删除 |
+| trip | `/api/v1/trip/prefill` | 从对话会话提取快速开始表单预填（会话记忆 + 最近对话 + 快模型） |
 | trip | `/api/v1/trip/plan`、`/api/v1/trip/plan/stream` | 一次性 / SSE 行程规划 |
 | trip | `/api/v1/trip/plan/resume`、`/api/v1/trip/plan/cancel` | 断线按 record_id + seq 续传 / 取消后台执行 |
 
@@ -119,6 +124,7 @@ plan_gate_node ──数据齐备──→ plan_node → evaluation_node ──�
 - 节点只返回**部分状态字典**，不要返回整个 state。
 - 新增字段必须同时加到 `PlannerState` 和 `initial_state()`。
 - `user_id` 用于 RAG 的用户私有文档过滤；`session_id` 用于日志与 checkpoint 线程标识。
+- `memory_context` 由 `TripService.prepare()` 从 `session_memories` + 长期记忆拼出，写入规划提示词作为表单字段的补充；表单字段优先，待确认信息必须标注“待确认”。
 
 ### 防幻觉契约（修改 prompt/模型时必须保留）
 
@@ -182,6 +188,26 @@ START → memory_load（加载/压缩记忆）→ intent（正则寒暄 → 快�
 
 不要再新增 `chat_messages` 表或手动搬运消息；checkpointer 是消息快照的唯一事实来源。
 
+### 可观测性与管理端评测
+
+`core/metrics.py` 是唯一指标入口，`prometheus_client` 为可选依赖：
+
+- Prometheus 指标（根路径 `/metrics`，由 `METRICS_PATH` 覆盖）：LLM 请求延迟 / token、
+  HTTP 请求、缓存命中 / 未命中 / 降级、精排结果（含 `circuit_breaker` 熔断计数）、
+  LangGraph 节点耗时、MCP / 知识库工具耗时。
+- LLM 指标通过 `LLM` 模型实例的 `callbacks=[LLMMetricsCallback]` 采集，
+  `get_llm()` / `get_fast_llm()` 构建时自动挂载；`bind_tools` / `with_structured_output`
+  也走同一实例。token 缺失时按字符估算，标签 `source=api|estimate`。
+- 缓存指标在 `integrations/cache.cache_get_json()` 内统一打点；工具耗时在 `wrap_tool()`；
+  精排指标在 `integrations/milvus._rerank()`。
+- 行程图在 `stream_events()` 的节点结束回调里记录；对话图通过
+  `modules/chat/agent.chat_config()` 挂 `NodeMetricsCallback`。
+- `snapshot()` 维护与 Prometheus 同源的进程内聚合，管理端看板无需 Prometheus 也能读。
+- `modules/admin` 通过独立 Python 子进程执行 `retrieval_eval` / `chat_eval`
+  （`sys.executable -m ...`），避免在 API 进程内修改 Milvus 全局配置或阻塞事件循环；
+  同类型评测同时只允许一个任务，日志保留尾部若干行。管理端接口统一要求
+  `X-Admin-Token: $KNOWLEDGE_ADMIN_TOKEN`。
+
 ### 记忆系统（分层记忆）
 
 `modules/memory/` 实现四层记忆，消息原文仍以 checkpointer 为唯一事实来源，摘要只是派生材料：
@@ -218,7 +244,7 @@ START → memory_load（加载/压缩记忆）→ intent（正则寒暄 → 快�
 - **工具结果**：`wrap_tool()` 在 `McpRegistry._load_one()` 里给每个 MCP 工具套一层缓存（行程规划与对话两条链路共用），知识库工具在 `_make_knowledge_tool()` 里用 `city:user_id` 作用域单独包装。
 - **会话历史**：`ChatHistory.aget_messages()` 读缓存加速，所有写入 checkpointer 的路径（prepare / stream 结束 / 重新生成 / 删除会话）都会主动失效；checkpointer 仍是唯一事实来源。
 - **向量检索结果**：`retrieve_knowledge()` 在调用 Milvus 前先查缓存，命中直接还原 `Document` 列表（含空结果）。
-- **对话回复**：`agent_llm_node`（推荐/规划）与 `chitchat_reply_node` 用「工作流 + 城市 + 上下文指纹」做 key，命中直接回放最终回答、跳过 LLM；只缓存没有 `tool_calls` 的最终文本。
+- **对话回复不缓存**：`agent_llm_node` 与 `chitchat_reply_node` 每次都会真实调用模型，保证多轮对话与重新生成拿到新回复。
 - 默认 TTL 60s（`REDIS_TTL`）；Redis 连不上只记 warning，所有读写降级为直通，绝不中断业务。本地 `redis` 容器带 `--requirepass root`，`.env` 的 `REDIS_URL` 需要写 `redis://:root@127.0.0.1:6379/0`。
 
 ### 行程 SSE 进度
@@ -241,6 +267,8 @@ START → memory_load（加载/压缩记忆）→ intent（正则寒暄 → 快�
 - 后端读仓库根目录 `.env`（pydantic-settings，`core/config.py`）：`POSTGRES_*` / `OPENAI_*` / `EMBEDDING_MODEL_NAME` / `AMAP_API_KEY` / `HOST` / `PORT` / `CORS_ORIGINS` / `LOG_LEVEL` / `MCP_*` / `MILVUS_URI` / `MILVUS_DB_NAME` / `MILVUS_COLLECTION` / `MILVUS_MEMORY_COLLECTION` / `MILVUS_DENSE_DIM` / `MILVUS_RERANK_*` / `MINERU_*` / `KNOWLEDGE_MARKDOWN_NORMALIZE` / `MEMORY_*` / `REDIS_ENABLED` / `REDIS_URL` / `REDIS_TTL` / `REDIS_KEY_PREFIX` / `REDIS_TIMEOUT` 等。
 - `settings.milvus` 是独立配置组（`Milvus`）；默认 `http://127.0.0.1:19530`、知识库 `knowledge_chunks`、长期记忆 `user_memories`、稠密 1024 维 COSINE、BM25 稀疏、`gte-rerank-v2`。项目只使用 Milvus，没有其他向量库后端。
 - `settings.memory` 是独立配置组（`Memory`）：`MEMORY_ENABLED` / `MEMORY_WINDOW_ROUNDS` / `MEMORY_SUMMARY_*` / `MEMORY_EXTRACT_INTERVAL_ROUNDS` / `MEMORY_LONG_TERM_*` / `MEMORY_CONTEXT_MAX_CHARS` / `MEMORY_WRITEBACK_KNOWLEDGE_GAP`。
+- `settings.metrics`（`Metrics`）：`METRICS_ENABLED` / `METRICS_PATH`。
+- `settings.evaluation`（`Evaluation`）：`EVAL_HYDE_CONCURRENCY`、`EVAL_PRICE_EMBEDDING_PER_1K` / `EVAL_PRICE_RERANK_PER_1K` / `EVAL_PRICE_LLM_INPUT_PER_1K` / `EVAL_PRICE_LLM_OUTPUT_PER_1K`（成本估算单价，默认 0 只展示调用量）、`EVAL_ADMIN_RUN_TTL_SECONDS` / `EVAL_ADMIN_LOG_LINES`。
 - Milvus 采用 Windows Docker Desktop 单容器模式（`milvus-standalone`，内含 embedded etcd + 本地存储），端口 `19530` / `9091` / `2379`；集合由 `init_milvus` 或应用启动时创建。
 - `settings.database.url` / `checkpoint_url` 由 `build_url()` 自动拼接：前者是 `postgresql+asyncpg://`（SQLAlchemy 元数据增删改查），后者是 `postgresql://`（psycopg checkpointer）。用户名/密码会做 URL 编码；默认值为 `127.0.0.1` / `5432` / `postgres` / `postgres` / `travel_agents`，部署时用 `POSTGRES_*` 覆盖。
 - **Windows 事件循环**：MCP stdio 子进程需要 `ProactorEventLoop`，psycopg async 需要 `SelectorEventLoop`。应用主循环保持 Proactor，`core/database.py` 在独立 Selector 线程里运行 checkpointer 连接池，并把 `aget_tuple` / `aput` / `aput_writes` / `adelete_thread` 等 async 方法代理回来。uvicorn 的 `loop` 用 `backend.app.core.runtime:proactor_loop_factory`。
@@ -275,6 +303,9 @@ START → memory_load（加载/压缩记忆）→ intent（正则寒暄 → 快�
 - 保持 Vite 代理使用 `127.0.0.1` 而非 `localhost`，否则 Node 可能解析到 IPv6 `::1` 导致连不上后端。
 - 前端超时保持 10 分钟（axios/fetch 与 Vite 代理），Agent 单次运行可能长达约 5 分钟。
 - 新城市的语料放在 `backend/app/data/corpus/<城市名>.txt`，文件名即 metadata 中的 `city`。
+- 管理端接口放在 `modules/admin/router.py`，统一 `/api/v1/admin` 前缀，并校验 `X-Admin-Token`。
+- 新增指标统一走 `core/metrics.py` 的 `observe_*` / `snapshot()`，不要在业务代码里直接 import `prometheus_client`。
+- 管理端评测必须通过独立子进程复用 `retrieval_eval` / `chat_eval` CLI，不要在 API 进程内修改 `settings.milvus.collection` / `db_name`。
 
 ## Never Do
 
@@ -285,6 +316,8 @@ START → memory_load（加载/压缩记忆）→ intent（正则寒暄 → 快�
 - 不要假设存在自动化测试或 lint 脚本（无 `pytest` / `npm test`）。
 - 不要为统一品牌而批量重命名 `sketchbook` / `sb-*`。
 - 不要用 Pinia 替换 `src/store.ts` 的轻量 store。
+- 不要在 API 进程内直接跑检索评测（会切换全局 Milvus 配置并影响生产检索）。
+- 不要绕过 `X-Admin-Token` 暴露 `/api/v1/admin/*` 管理端接口。
 - 不要把 Vite 代理改成 `localhost`。
 - 不要修改 Milvus 集合创建后的 schema（字段 / 维度 / 度量不可改，需 `init_milvus --recreate` 后重新入库）。
 - 不要把父块写进 Milvus，也不要把子块正文只存 Milvus 而不留 `parent_id`。
@@ -320,19 +353,23 @@ START → memory_load（加载/压缩记忆）→ intent（正则寒暄 → 快�
 - 图结构与路由：`backend/app/agent/graph.py`
 - 节点标签与轮次上限：`backend/app/agent/constants.py`
 - 门控与就绪判断：`backend/app/agent/nodes/gate.py`
+- 对话 → 快速开始预填：`backend/app/modules/trip/prefill.py`、`backend/app/modules/trip/service.py`
 - 防幻觉回填：`backend/app/agent/nodes/plan.py`、`attraction.py`、`hotel.py`
 - 评估规则：`backend/app/agent/nodes/evaluation.py`
 - 会话 / 对话：`backend/app/modules/sessions/`、`backend/app/modules/chat/`
 - 对话工作流（意图路由 / 闲聊子图 / 安全围栏）：`backend/app/modules/chat/workflow/`
 - 分层记忆（摘要压缩 / 事实抽取 / 长期记忆）：`backend/app/modules/memory/`
 - 长期记忆向量层：`backend/app/integrations/memory_milvus.py`
-- 对话与检索评测：`backend/app/evaluation/chat_eval.py`、`retrieval_eval.py`、`datasets/`
+- 对话与检索评测：`backend/app/evaluation/chat_eval.py`、`retrieval_eval.py`、`datasets/`（`retrieval_eval_hard.jsonl` 为难负例 / 长文档 / 模糊 query）
+- 可观测性指标：`backend/app/core/metrics.py`
+- 管理端评测 / 报告 / 指标：`backend/app/modules/admin/`
+- 管理端看板：`frontend/src/views/Admin.vue`、`frontend/src/components/admin/`、`frontend/src/styles/admin.css`
 - 知识库与 RAG 入库：`backend/app/modules/knowledge/`、`backend/app/integrations/milvus.py`
 - 父子块切分：`backend/app/modules/knowledge/chunking.py`
 - 混合检索与父块回填：`backend/app/modules/knowledge/retrieval.py`
 - Markdown 排版优化：`backend/app/modules/knowledge/markdown.py`
 - MinerU / VLM / PDF 抽取：`backend/app/modules/knowledge/extractors.py`
 - Milvus 初始化 CLI：`backend/app/scripts/init_milvus.py`
-- Redis 缓存（工具结果 / 对话回复 / 检索结果）：`backend/app/integrations/cache.py`
+- Redis 缓存（工具结果 / 会话历史 / 检索结果）：`backend/app/integrations/cache.py`
 - MCP：`backend/app/integrations/mcp.py`
 - 响应/事件模型：`backend/app/modules/trip/schemas.py`、`frontend/src/types/index.ts`、`frontend/src/services/api.ts`

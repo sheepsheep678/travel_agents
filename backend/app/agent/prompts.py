@@ -111,6 +111,8 @@ def build_plan_prompt(state, date_list, attractions_brief, hotels_brief,
 - 住宿偏好: {state.get('accommodation', '')}
 - 用户偏好: {state.get('preferences', [])}
 - 额外需求: {state.get('free_text_input', '') or '无'}
+- 对话补充偏好(用户此前明确表达，必须遵守；与上面表单字段冲突时以表单字段为准):
+{state.get('memory_context', '') or '无'}
 - 双源重合景点(候选数据与知识库均推荐，选点时最高优先级): {sorted(overlap_names) if overlap_names else '无'}
 
 
@@ -170,7 +172,8 @@ def build_eval_prompt(state, travel_days, plan_brief, hard_issues) -> str:
 
 基本信息: 共{travel_days}天({state['start_date']}~{state['end_date']})，大交通: {state.get('transportation', '')}，
 住宿偏好: {state.get('accommodation', '')}，用户偏好: {state.get('preferences', [])}，
-额外需求: {state.get('free_text_input', '') or '无'}
+额外需求: {state.get('free_text_input', '') or '无'}，
+对话补充偏好: {state.get('memory_context', '') or '无'}
 
 天气数据:
 {json.dumps([w.model_dump() for w in state.get("weather_result", [])], ensure_ascii=False)}
