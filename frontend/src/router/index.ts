@@ -27,7 +27,7 @@ const router = createRouter({
 })
 
 router.afterEach((to) => {
-  document.title = to.meta.title ?? '旅迹智绘 · 手账旅行计划'
+  document.title = to.meta.title ?? '旅迹智绘 · AI 旅行规划'
 })
 
 export default router

@@ -27,7 +27,7 @@
   font-family: var(--display);
   font-weight: 500;
   line-height: 1.4;
-  letter-spacing: 0.02em;
+  letter-spacing: 0.01em;
   color: var(--ink);
 }
 .md-body h1 { font-size: 1.35em; }
@@ -40,7 +40,7 @@
 .md-body ul,
 .md-body ol {
   margin: 0.4em 0 0.8em;
-  padding-left: 1.4em;
+  padding-left: 1.45em;
 }
 .md-body ul { list-style: disc; }
 .md-body ul ul { list-style: circle; }
@@ -66,17 +66,18 @@
 
 .md-body a {
   color: var(--earth);
-  text-decoration: underline;
-  text-underline-offset: 2px;
+  text-decoration: none;
 }
 .md-body a:hover {
-  color: var(--ink);
+  text-decoration: underline;
 }
 
 .md-body blockquote {
   margin: 0.6em 0;
-  padding: 0.1em 0 0.1em 0.9em;
-  border-left: 2px solid var(--hairline);
+  padding: 0.25em 0 0.25em 0.9em;
+  border-left: 3px solid var(--blue-100);
+  background: var(--surface);
+  border-radius: 0 8px 8px 0;
   color: var(--ink-soft);
 }
 
@@ -87,19 +88,19 @@
 }
 
 .md-body code {
-  padding: 0.1em 0.36em;
-  border-radius: 3px;
-  background: rgba(43, 39, 33, 0.07);
+  padding: 0.1em 0.4em;
+  border-radius: 6px;
+  background: var(--surface-2);
   font-family: ui-monospace, 'SFMono-Regular', Menlo, Consolas, monospace;
   font-size: 0.9em;
 }
 .md-body pre {
   margin: 0.6em 0;
-  padding: 10px 12px;
+  padding: 12px 14px;
   overflow-x: auto;
   border: 1px solid var(--hairline);
-  border-radius: 4px;
-  background: rgba(255, 252, 244, 0.6);
+  border-radius: 12px;
+  background: var(--surface);
   line-height: 1.65;
 }
 .md-body pre code {
@@ -118,23 +119,23 @@
 }
 .md-body th,
 .md-body td {
-  padding: 6px 10px;
+  padding: 7px 11px;
   border: 1px solid var(--hairline);
   text-align: left;
   vertical-align: top;
   line-height: 1.6;
 }
 .md-body th {
-  background: rgba(43, 39, 33, 0.05);
+  background: var(--surface);
   font-weight: 600;
   white-space: nowrap;
 }
 .md-body tbody tr:nth-child(even) {
-  background: rgba(255, 252, 244, 0.4);
+  background: #fcfcfd;
 }
 
 .md-body img {
   max-width: 100%;
   height: auto;
-  border-radius: 3px;
+  border-radius: 10px;
 }

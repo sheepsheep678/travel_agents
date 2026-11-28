@@ -99,34 +99,37 @@ function onSubmit() {
 
 <style scoped>
 .sb-form :deep(.ant-form-item) {
-  margin-bottom: 14px;
+  margin-bottom: 8px;
 }
 .sb-form :deep(.ant-form-item-label) {
   padding-bottom: 2px;
+  line-height: 1.3;
 }
 .sb-form :deep(.ant-form-item-label > label) {
   font-family: var(--display);
+  font-weight: 500;
   color: var(--ink-soft);
-  font-size: 13px;
-  letter-spacing: 0.02em;
+  font-size: 12px;
+  line-height: 1.3;
+  letter-spacing: 0.01em;
 }
 .sb-form :deep(.ant-form-item-label > label::after) {
   display: none;
 }
 
-/* 下划线墨迹输入 */
+/* Material 填充式输入：浅灰底 + 圆角，聚焦时白底蓝描边 */
 .sb-form :deep(.ant-input),
 .sb-form :deep(.ant-input-affix-wrapper),
 .sb-form :deep(.ant-select-selector),
 .sb-form :deep(.ant-picker),
 .sb-form :deep(.ant-input-number) {
-  background: transparent;
-  border: none;
-  border-bottom: 1px solid var(--hairline);
-  border-radius: 0;
-  box-shadow: none;
+  background: var(--surface-2) !important;
+  border: 1px solid transparent !important;
+  border-radius: 10px !important;
+  box-shadow: none !important;
   color: var(--ink);
   font-family: var(--font);
+  transition: background 0.18s, border-color 0.18s, box-shadow 0.18s;
 }
 .sb-form :deep(.ant-input-number-input) {
   color: var(--ink);
@@ -137,24 +140,26 @@ function onSubmit() {
 .sb-form :deep(.ant-picker-focused),
 .sb-form :deep(.ant-select-focused .ant-select-selector),
 .sb-form :deep(.ant-input-number-focused) {
-  border-bottom-color: var(--ink);
-  box-shadow: none;
+  background: #ffffff !important;
+  border-color: var(--earth) !important;
+  box-shadow: 0 0 0 3px var(--blue-50) !important;
 }
 .sb-form :deep(.ant-input::placeholder),
 .sb-form :deep(.ant-select-selection-placeholder) {
   color: var(--ink-faint);
-  font-style: italic;
 }
 .sb-form :deep(.ant-picker-input > input) {
   color: var(--ink);
+  font-family: var(--font);
 }
 .sb-form :deep(.ant-select-selection-item) {
   color: var(--ink);
 }
 .sb-form :deep(.ant-select-tag) {
-  background: rgba(255, 252, 244, 0.8);
-  border: 1px solid var(--hairline);
-  color: var(--ink);
+  background: #ffffff;
+  border: 1px solid var(--blue-100);
+  border-radius: 999px;
+  color: var(--blue-dark);
 }
 .sb-form :deep(.ant-picker-suffix),
 .sb-form :deep(.ant-select-arrow) {
@@ -162,14 +167,13 @@ function onSubmit() {
 }
 .sb-form :deep(.ant-input-number-handler-wrap) {
   opacity: 0.4;
+  border-radius: 0 10px 10px 0;
 }
 
-/* 额外要求：便签盒式 */
+/* 额外要求：多行备注 */
 .sb-notes :deep(.ant-input) {
-  border: 1px solid var(--hairline);
-  border-radius: 6px;
-  padding: 8px 10px;
-  background: rgba(255, 252, 244, 0.5);
+  padding: 7px 10px;
+  line-height: 1.6;
 }
 
 /* 城市抬头 */
@@ -177,48 +181,51 @@ function onSubmit() {
   display: flex;
   align-items: baseline;
   gap: 10px;
-  margin-bottom: 16px;
-  padding-bottom: 10px;
+  margin-bottom: 12px;
+  padding-bottom: 8px;
   border-bottom: 1px solid var(--hairline);
 }
 .sb-city-label {
-  font-size: 12px;
+  font-size: 11px;
+  font-weight: 500;
   letter-spacing: var(--track-caps);
   color: var(--ink-faint);
   text-transform: uppercase;
 }
 .sb-city-name {
   font-family: var(--display);
-  font-size: 30px;
+  font-weight: 500;
+  font-size: 27px;
   color: var(--ink);
-  letter-spacing: 0.02em;
+  letter-spacing: 0.01em;
 }
 
 .sb-grid {
   display: grid;
   grid-template-columns: 1fr 1fr;
-  gap: 12px;
+  gap: 10px;
 }
 .sb-grid :deep(.ant-form-item) {
   min-width: 0;
 }
 
 .sb-submit {
-  margin-top: 6px;
-  height: 46px;
-  border-radius: 4px;
-  font-size: 15px;
-  letter-spacing: 0.06em;
+  margin-top: 4px;
+  height: 44px;
+  border-radius: 999px;
+  font-size: 14.5px;
+  font-weight: 500;
+  letter-spacing: 0.02em;
 }
 .sb-form :deep(.ant-btn-primary) {
-  background: var(--ink);
+  background: var(--earth);
   border: none;
-  color: var(--paper);
-  box-shadow: none;
+  color: #ffffff;
+  box-shadow: 0 1px 2px rgba(60, 64, 67, 0.18);
   font-family: var(--font);
 }
 .sb-form :deep(.ant-btn-primary:hover) {
-  background: var(--earth);
+  background: var(--blue-dark);
   color: #fff;
   opacity: 1;
 }
@@ -226,6 +233,27 @@ function onSubmit() {
 @media (max-width: 560px) {
   .sb-grid {
     grid-template-columns: 1fr;
+  }
+}
+
+/* 矮屏（如 1366×768）进一步压缩纵向间距，保证表单完整落在书页内 */
+@media (max-height: 820px) {
+  .sb-form :deep(.ant-form-item) {
+    margin-bottom: 6px;
+  }
+  .sb-city {
+    margin-bottom: 8px;
+    padding-bottom: 6px;
+  }
+  .sb-city-name {
+    font-size: 24px;
+  }
+  .sb-notes :deep(.ant-input) {
+    padding: 6px 10px;
+  }
+  .sb-submit {
+    height: 42px;
+    margin-top: 2px;
   }
 }
 </style>

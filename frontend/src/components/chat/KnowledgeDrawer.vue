@@ -383,7 +383,7 @@ onUnmounted(() => {
   position: fixed;
   inset: 0;
   z-index: 65;
-  background: rgba(43, 39, 33, 0.28);
+  background: rgba(32, 33, 36, 0.32);
 }
 
 .kd-panel {
@@ -392,10 +392,10 @@ onUnmounted(() => {
   z-index: 70;
   display: flex;
   flex-direction: column;
-  width: min(400px, 92vw);
-  border-right: 1px solid var(--hairline, rgba(43, 39, 33, 0.18));
-  background: var(--paper, #ece7dc);
-  box-shadow: 24px 0 60px -34px rgba(43, 39, 33, 0.55);
+  width: min(408px, 92vw);
+  border-right: 1px solid var(--hairline, #dadce0);
+  background: #ffffff;
+  box-shadow: 0 8px 28px rgba(60, 64, 67, 0.22);
 }
 
 .kd-head {
@@ -408,41 +408,45 @@ onUnmounted(() => {
 
 .kd-kicker {
   margin: 0 0 6px;
-  font-size: 10px;
-  letter-spacing: 0.18em;
-  color: var(--ink-faint, #8d8578);
+  font-size: 10.5px;
+  font-weight: 500;
+  letter-spacing: 0.14em;
+  color: var(--earth, #1a73e8);
 }
 
 .kd-title {
   margin: 0;
-  font-family: var(--display, Georgia, serif);
+  font-family: var(--display, sans-serif);
   font-size: 24px;
-  font-weight: 400;
-  letter-spacing: 0.03em;
-  color: var(--ink, #2b2721);
+  font-weight: 500;
+  letter-spacing: 0.01em;
+  color: var(--ink, #202124);
 }
 
 .kd-close {
   flex: none;
-  width: 32px;
-  height: 32px;
+  width: 34px;
+  height: 34px;
   border: 0;
+  border-radius: 50%;
   background: transparent;
-  color: var(--ink-soft, #5f584d);
-  font-size: 22px;
+  color: var(--ink-soft, #5f6368);
+  font-size: 21px;
   line-height: 1;
   cursor: pointer;
+  transition: background 0.18s, color 0.18s;
 }
 
 .kd-close:hover {
-  color: var(--seal, #b3402a);
+  color: var(--ink, #202124);
+  background: var(--surface-2, #f1f3f4);
 }
 
 .kd-tabs {
   display: flex;
-  gap: 20px;
+  gap: 24px;
   padding: 0 20px;
-  border-bottom: 1px solid var(--hairline, rgba(43, 39, 33, 0.18));
+  border-bottom: 1px solid var(--hairline, #dadce0);
 }
 
 .kd-tab {
@@ -450,15 +454,17 @@ onUnmounted(() => {
   padding: 10px 0;
   border: 0;
   background: transparent;
-  font-family: var(--font, Georgia, serif);
-  font-size: 13px;
-  letter-spacing: 0.04em;
-  color: var(--ink-faint, #8d8578);
+  font-family: var(--font, sans-serif);
+  font-size: 13.5px;
+  font-weight: 500;
+  letter-spacing: 0.01em;
+  color: var(--ink-faint, #9aa0a6);
   cursor: pointer;
+  transition: color 0.18s;
 }
 
 .kd-tab.active {
-  color: var(--ink, #2b2721);
+  color: var(--blue-dark, #1557b0);
 }
 
 .kd-tab.active::after {
@@ -468,7 +474,8 @@ onUnmounted(() => {
   bottom: -1px;
   left: 0;
   height: 2px;
-  background: var(--seal, #b3402a);
+  border-radius: 2px 2px 0 0;
+  background: var(--earth, #1a73e8);
 }
 
 .kd-body {
@@ -485,22 +492,23 @@ onUnmounted(() => {
 }
 
 .kd-jump-list {
-  padding: 8px 10px;
-  border: 1px dashed var(--hairline, rgba(43, 39, 33, 0.28));
-  border-radius: 3px;
-  background: rgba(255, 252, 244, 0.5);
-  font-family: var(--font, Georgia, serif);
-  font-size: 11px;
-  letter-spacing: 0.03em;
-  color: var(--ink-soft, #5f584d);
+  padding: 9px 12px;
+  border: 1px solid var(--hairline, #dadce0);
+  border-radius: 10px;
+  background: var(--surface, #f8f9fa);
+  font-family: var(--font, sans-serif);
+  font-size: 11.5px;
+  letter-spacing: 0.01em;
+  color: var(--ink-soft, #5f6368);
   text-align: left;
   cursor: pointer;
-  transition: border-color 0.2s, color 0.2s;
+  transition: border-color 0.2s, color 0.2s, background 0.2s;
 }
 
 .kd-jump-list:hover {
-  border-color: var(--ink, #2b2721);
-  color: var(--ink, #2b2721);
+  border-color: #c6dafc;
+  background: var(--blue-50, #e8f0fe);
+  color: var(--blue-dark, #1557b0);
 }
 
 .kd-drop {
@@ -509,11 +517,11 @@ onUnmounted(() => {
   align-items: center;
   justify-content: center;
   gap: 5px;
-  min-height: 132px;
+  min-height: 138px;
   padding: 16px;
-  border: 1px dashed var(--hairline, rgba(43, 39, 33, 0.28));
-  border-radius: 4px;
-  background: rgba(255, 252, 244, 0.42);
+  border: 1px dashed var(--hairline, #dadce0);
+  border-radius: 14px;
+  background: var(--surface, #f8f9fa);
   text-align: center;
   cursor: pointer;
   transition: border-color 0.2s, background 0.2s;
@@ -521,8 +529,8 @@ onUnmounted(() => {
 
 .kd-drop:hover,
 .kd-drop.has {
-  border-color: var(--ink, #2b2721);
-  background: rgba(255, 252, 244, 0.72);
+  border-color: #c6dafc;
+  background: var(--blue-50, #e8f0fe);
 }
 
 .kd-file-input {
@@ -531,17 +539,17 @@ onUnmounted(() => {
 
 .kd-drop-plus {
   font-size: 24px;
-  color: var(--ink-faint, #8d8578);
+  color: var(--earth, #1a73e8);
 }
 
 .kd-drop-title {
   font-size: 13px;
-  color: var(--ink-soft, #5f584d);
+  color: var(--ink-soft, #5f6368);
 }
 
 .kd-drop-hint {
-  font-size: 10.5px;
-  color: var(--ink-faint, #8d8578);
+  font-size: 11px;
+  color: var(--ink-faint, #9aa0a6);
 }
 
 .kd-file-icon {
@@ -554,12 +562,12 @@ onUnmounted(() => {
   text-overflow: ellipsis;
   white-space: nowrap;
   font-size: 13px;
-  color: var(--ink, #2b2721);
+  color: var(--ink, #202124);
 }
 
 .kd-file-size {
   font-size: 10.5px;
-  color: var(--ink-faint, #8d8578);
+  color: var(--ink-faint, #9aa0a6);
 }
 
 .kd-file-remove {
@@ -567,7 +575,7 @@ onUnmounted(() => {
   border: 0;
   background: transparent;
   font-size: 11px;
-  color: var(--seal, #b3402a);
+  color: var(--seal, #d93025);
   text-decoration: underline;
   cursor: pointer;
 }
@@ -578,35 +586,37 @@ onUnmounted(() => {
   gap: 6px;
   font-size: 11px;
   letter-spacing: 0.06em;
-  color: var(--ink-soft, #5f584d);
+  color: var(--ink-soft, #5f6368);
 }
 
 .kd-textarea,
 .kd-input {
   width: 100%;
   box-sizing: border-box;
-  padding: 9px 10px;
-  border: 1px solid var(--hairline, rgba(43, 39, 33, 0.18));
-  border-radius: 3px;
-  background: rgba(255, 252, 244, 0.55);
-  font-family: var(--font, Georgia, serif);
+  padding: 10px 12px;
+  border: 1px solid transparent;
+  border-radius: 10px;
+  background: var(--surface-2, #f1f3f4);
+  font-family: var(--font, sans-serif);
   font-size: 13px;
   line-height: 1.7;
-  color: var(--ink, #2b2721);
+  color: var(--ink, #202124);
   outline: none;
   resize: vertical;
+  transition: background 0.18s, border-color 0.18s, box-shadow 0.18s;
 }
 
 .kd-textarea:focus,
 .kd-input:focus {
-  border-color: rgba(43, 39, 33, 0.42);
-  background: rgba(255, 252, 244, 0.9);
+  border-color: var(--earth, #1a73e8);
+  background: #ffffff;
+  box-shadow: 0 0 0 3px var(--blue-50, #e8f0fe);
 }
 
 .kd-counter {
   align-self: flex-end;
   font-size: 10px;
-  color: var(--ink-faint, #8d8578);
+  color: var(--ink-faint, #9aa0a6);
 }
 
 .kd-row {
@@ -619,28 +629,29 @@ onUnmounted(() => {
   margin: 0;
   font-size: 12px;
   line-height: 1.7;
-  color: var(--seal, #b3402a);
+  color: var(--seal, #d93025);
 }
 
 .kd-submit {
-  height: 40px;
-  border: 1px solid var(--ink, #2b2721);
-  border-radius: 3px;
-  background: var(--ink, #2b2721);
-  font-family: var(--font, Georgia, serif);
-  font-size: 13px;
-  letter-spacing: 0.06em;
-  color: var(--paper, #ece7dc);
+  height: 44px;
+  border: 0;
+  border-radius: 999px;
+  background: var(--earth, #1a73e8);
+  font-family: var(--font, sans-serif);
+  font-size: 13.5px;
+  font-weight: 500;
+  letter-spacing: 0.01em;
+  color: #ffffff;
   cursor: pointer;
   transition: background 0.2s, opacity 0.2s;
 }
 
 .kd-submit:hover:not(:disabled) {
-  background: var(--earth, #9a6a3e);
+  background: var(--blue-dark, #1557b0);
 }
 
 .kd-submit:disabled {
-  opacity: 0.35;
+  opacity: 0.5;
   cursor: default;
 }
 
@@ -658,24 +669,25 @@ onUnmounted(() => {
   padding-bottom: 2px;
   font-size: 10.5px;
   letter-spacing: 0.04em;
-  color: var(--ink-faint, #8d8578);
+  color: var(--ink-faint, #9aa0a6);
 }
 
 .kd-refresh {
-  padding: 2px 7px;
-  border: 1px solid var(--hairline, rgba(43, 39, 33, 0.18));
-  border-radius: 2px;
-  background: transparent;
-  font-family: var(--font, Georgia, serif);
-  font-size: 10.5px;
-  color: var(--ink-soft, #5f584d);
+  padding: 3px 11px;
+  border: 1px solid var(--hairline, #dadce0);
+  border-radius: 999px;
+  background: #ffffff;
+  font-family: var(--font, sans-serif);
+  font-size: 11px;
+  color: var(--ink-soft, #5f6368);
   cursor: pointer;
-  transition: border-color 0.2s, color 0.2s;
+  transition: border-color 0.2s, color 0.2s, background 0.2s;
 }
 
 .kd-refresh:hover:not(:disabled) {
-  border-color: var(--ink, #2b2721);
-  color: var(--ink, #2b2721);
+  border-color: #c6dafc;
+  background: var(--blue-50, #e8f0fe);
+  color: var(--blue-dark, #1557b0);
 }
 
 .kd-refresh:disabled {
@@ -687,15 +699,21 @@ onUnmounted(() => {
   padding: 36px 8px;
   font-size: 12px;
   line-height: 1.9;
-  color: var(--ink-faint, #8d8578);
+  color: var(--ink-faint, #9aa0a6);
   text-align: center;
 }
 
 .kd-item {
-  padding: 13px 14px;
-  border: 1px solid var(--hairline, rgba(43, 39, 33, 0.18));
-  border-radius: 4px;
-  background: rgba(255, 252, 244, 0.5);
+  padding: 14px 15px;
+  border: 1px solid var(--hairline, #dadce0);
+  border-radius: 14px;
+  background: #ffffff;
+  transition: border-color 0.18s, box-shadow 0.18s;
+}
+
+.kd-item:hover {
+  border-color: #c6dafc;
+  box-shadow: var(--shadow-1, 0 1px 3px rgba(60, 64, 67, 0.12));
 }
 
 .kd-item-head {
@@ -706,12 +724,13 @@ onUnmounted(() => {
 
 .kd-badge {
   flex: none;
-  padding: 2px 5px;
-  border: 1px solid var(--hairline, rgba(43, 39, 33, 0.22));
-  border-radius: 2px;
-  font-size: 9px;
-  letter-spacing: 0.08em;
-  color: var(--ink-faint, #8d8578);
+  padding: 2px 8px;
+  border-radius: 999px;
+  background: var(--surface-2, #f1f3f4);
+  font-size: 9.5px;
+  font-weight: 500;
+  letter-spacing: 0.06em;
+  color: var(--ink-soft, #5f6368);
 }
 
 .kd-item-title {
@@ -721,29 +740,28 @@ onUnmounted(() => {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-  font-family: var(--font, Georgia, serif);
-  font-size: 13px;
-  font-weight: 400;
-  color: var(--ink, #2b2721);
+  font-family: var(--font, sans-serif);
+  font-size: 13.5px;
+  font-weight: 500;
+  color: var(--ink, #202124);
 }
 
 .kd-item-del {
   flex: none;
-  padding: 3px 7px;
-  border: 1px solid transparent;
-  border-radius: 2px;
+  padding: 4px 10px;
+  border: 0;
+  border-radius: 999px;
   background: transparent;
-  font-family: var(--font, Georgia, serif);
-  font-size: 10.5px;
-  letter-spacing: 0.04em;
-  color: var(--seal, #b3402a);
+  font-family: var(--font, sans-serif);
+  font-size: 11px;
+  letter-spacing: 0.01em;
+  color: var(--seal, #d93025);
   cursor: pointer;
-  transition: border-color 0.2s, background 0.2s;
+  transition: background 0.18s;
 }
 
 .kd-item-del:hover {
-  border-color: var(--seal, #b3402a);
-  background: rgba(179, 64, 42, 0.06);
+  background: #fce8e6;
 }
 
 .kd-item-preview {
@@ -754,7 +772,7 @@ onUnmounted(() => {
   -webkit-box-orient: vertical;
   font-size: 12px;
   line-height: 1.75;
-  color: var(--ink-soft, #5f584d);
+  color: var(--ink-soft, #5f6368);
   white-space: pre-wrap;
   word-break: break-word;
 }
@@ -763,20 +781,20 @@ onUnmounted(() => {
   margin: 8px 0 0;
   font-size: 10px;
   letter-spacing: 0.04em;
-  color: var(--ink-faint, #8d8578);
+  color: var(--ink-faint, #9aa0a6);
 }
 
 .kd-foot {
   flex: none;
   padding: 12px 20px 16px;
-  border-top: 1px solid var(--hairline, rgba(43, 39, 33, 0.18));
+  border-top: 1px solid var(--hairline, #dadce0);
   font-size: 10px;
   line-height: 1.6;
-  color: var(--ink-faint, #8d8578);
+  color: var(--ink-faint, #9aa0a6);
 }
 
 .kd-id {
-  color: var(--ink-faint, #8d8578);
+  color: var(--ink-faint, #9aa0a6);
   letter-spacing: 0.02em;
 }
 

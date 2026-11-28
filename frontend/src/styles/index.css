@@ -1,18 +1,23 @@
-/* ========== 全局基础样式（手账纸墨主题见 styles/sketchbook.css） ========== */
+/* ========== 全局基础样式（Google 风格浅色主题，token 见 styles/sketchbook.css） ========== */
 :root {
-  --gold: #ffb703;
-  --coral: #ff6b6b;
-  --teal: #43c6ac;
+  --g-blue: #1a73e8;
+  --g-blue-dark: #1557b0;
+  --g-blue-50: #e8f0fe;
+  --g-blue-100: #d2e3fc;
+  --g-red: #d93025;
+  --g-green: #137333;
+  --g-yellow: #f9ab00;
 
-  --glass-bg: rgba(255, 255, 255, 0.08);
-  --glass-border: rgba(255, 255, 255, 0.16);
+  --glass-bg: rgba(255, 255, 255, 0.78);
+  --glass-border: rgba(218, 220, 224, 0.9);
   --card-bg: #ffffff;
-  --text-main: #1e2a45;
-  --text-soft: #5a6b8c;
-  --radius-lg: 20px;
+  --text-main: #202124;
+  --text-soft: #5f6368;
+  --radius-lg: 24px;
   --radius-md: 14px;
-  --shadow-soft: 0 18px 40px -18px rgba(31, 42, 82, 0.35);
-  --grad-gold: linear-gradient(120deg, var(--gold), var(--coral));
+  --shadow-soft: 0 1px 2px rgba(60, 64, 67, 0.1), 0 2px 10px rgba(60, 64, 67, 0.08);
+  --shadow-hover: 0 1px 3px rgba(60, 64, 67, 0.16), 0 6px 20px rgba(60, 64, 67, 0.14);
+  --grad-gold: linear-gradient(90deg, #4285f4, #1a73e8);
 }
 
 * {
@@ -26,10 +31,19 @@ html {
 }
 
 body {
-  font-family: 'PingFang SC', 'Hiragino Sans GB', 'Microsoft YaHei', 'Helvetica Neue', Arial, sans-serif;
+  font-family:
+    'Google Sans', 'Product Sans', Roboto, 'Noto Sans SC', 'PingFang SC',
+    'Microsoft YaHei', system-ui, -apple-system, 'Segoe UI', sans-serif;
   color: var(--text-main);
+  background: #ffffff;
   -webkit-font-smoothing: antialiased;
-  background: #f4f6fb;
+  -moz-osx-font-smoothing: grayscale;
+  text-rendering: optimizeLegibility;
+}
+
+::selection {
+  background: var(--g-blue-100);
+  color: #174ea6;
 }
 
 #app {
@@ -55,16 +69,17 @@ body {
 
 .card {
   background: var(--card-bg);
+  border: 1px solid #dadce0;
   border-radius: var(--radius-lg);
   box-shadow: var(--shadow-soft);
 }
 
 /* 柔和入场动画 */
 @keyframes fadeUp {
-  from { opacity: 0; transform: translateY(18px); }
+  from { opacity: 0; transform: translateY(14px); }
   to { opacity: 1; transform: translateY(0); }
 }
-.fade-up { animation: fadeUp 0.6s ease both; }
+.fade-up { animation: fadeUp 0.55s cubic-bezier(0.2, 0.7, 0.3, 1) both; }
 
 /* 呼吸动画 */
 @keyframes breathe {
@@ -73,16 +88,43 @@ body {
 }
 .breathe { animation: breathe 1.8s ease-in-out infinite; }
 
-/* 滚动条美化（纸墨色，与手账主题一致；Firefox 走 scrollbar-color） */
-html { scrollbar-color: rgba(43, 39, 33, 0.18) transparent; }
-::-webkit-scrollbar { width: 8px; height: 8px; }
-::-webkit-scrollbar-thumb { background: rgba(43, 39, 33, 0.18); border-radius: 8px; }
-::-webkit-scrollbar-thumb:hover { background: rgba(43, 39, 33, 0.3); }
+/* 滚动条（浅灰，贴合 Material 表面色） */
+html { scrollbar-color: #dadce0 transparent; }
+::-webkit-scrollbar { width: 10px; height: 10px; }
+::-webkit-scrollbar-thumb { background: #dadce0; border-radius: 999px; border: 2px solid transparent; background-clip: content-box; }
+::-webkit-scrollbar-thumb:hover { background: #bdc1c6; background-clip: content-box; }
 
-/* antd 主题微调（墨色主按钮；页面内有更具体的局部覆写时以局部为准） */
-.ant-btn-primary {
-  background: var(--ink, #2b2721);
-  border: none;
-  box-shadow: 0 10px 24px -14px rgba(43, 39, 33, 0.55);
+/* antd 主题：Google 蓝主按钮 + 胶囊圆角 */
+.ant-btn {
+  border-radius: 999px;
+  font-family: inherit;
+  box-shadow: none;
 }
-.ant-btn-primary:hover { background: var(--earth, #9a6a3e); opacity: 0.95; }
+.ant-btn-primary {
+  background: var(--g-blue);
+  border: none;
+  color: #fff;
+  box-shadow: 0 1px 2px rgba(60, 64, 67, 0.18);
+}
+.ant-btn-primary:hover,
+.ant-btn-primary:focus {
+  background: var(--g-blue-dark) !important;
+  color: #fff !important;
+  box-shadow: 0 1px 3px rgba(60, 64, 67, 0.24) !important;
+}
+.ant-input,
+.ant-input-affix-wrapper,
+.ant-input-number,
+.ant-select .ant-select-selector,
+.ant-picker {
+  border-radius: 8px;
+}
+.ant-tag {
+  border-radius: 999px;
+}
+
+/* 键盘可达性：统一蓝色焦点环 */
+:focus-visible {
+  outline: 2px solid var(--g-blue);
+  outline-offset: 2px;
+}

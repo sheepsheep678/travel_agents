@@ -45,79 +45,80 @@ function onKeydown(e: KeyboardEvent) {
 
 <style scoped>
 .composer {
-  width: min(760px, calc(100% - 56px));
+  width: min(800px, calc(100% - 56px));
   margin: 0 auto;
-  padding: 14px 0 10px;
+  padding: 16px 0 12px;
 }
 .composer-box {
   display: flex;
   align-items: flex-end;
   gap: 10px;
-  padding: 9px 10px 9px 14px;
+  padding: 8px 8px 8px 20px;
   border: 1px solid var(--hairline);
-  border-radius: 6px;
-  background: rgba(255, 252, 244, 0.72);
-  transition: border-color 0.2s, box-shadow 0.2s, background 0.2s;
+  border-radius: 26px;
+  background: #ffffff;
+  box-shadow: 0 1px 2px rgba(60, 64, 67, 0.12), 0 1px 4px rgba(60, 64, 67, 0.08);
+  transition: border-color 0.2s, box-shadow 0.2s;
 }
 .composer-box.focus {
-  border-color: rgba(43, 39, 33, 0.42);
-  background: rgba(255, 252, 244, 0.95);
-  box-shadow: 0 10px 26px -22px rgba(43, 39, 33, 0.7);
+  border-color: #c6dafc;
+  box-shadow: 0 1px 6px rgba(32, 33, 36, 0.2), 0 2px 10px rgba(66, 133, 244, 0.1);
 }
+/* a-textarea 的根 DOM 就是 textarea 本身，class 直接落在它上面，不能用后代选择器 */
 .composer-input {
   flex: 1;
   min-width: 0;
-}
-.composer-input :deep(textarea) {
+  display: block;
   background: transparent;
   border: 0;
   box-shadow: none;
   resize: none;
   font-family: var(--font);
-  font-size: 14px;
-  line-height: 1.7;
+  font-size: 15px;
+  /* 固定 24px 行高 + 上下各 8px：单行高度正好 40px，与发送按钮同高，占位文字垂直居中 */
+  line-height: 24px;
+  min-height: 40px;
   color: var(--ink);
-  padding: 4px 0;
+  padding: 8px 0;
 }
-.composer-input :deep(textarea::placeholder) {
+.composer-input::placeholder {
   color: var(--ink-faint);
 }
 .composer-btn {
   flex: none;
-  height: 36px;
-  padding: 0 18px;
+  height: 40px;
+  padding: 0 20px;
   border: 0;
-  border-radius: 3px;
-  background: var(--ink);
-  color: var(--paper);
+  border-radius: 999px;
+  background: var(--earth);
+  color: #ffffff;
   font-family: var(--font);
-  font-size: 13px;
-  letter-spacing: 0.04em;
+  font-size: 13.5px;
+  font-weight: 500;
+  letter-spacing: 0.01em;
   cursor: pointer;
   transition: background 0.2s, opacity 0.2s;
 }
 .composer-btn:hover:not(:disabled) {
-  background: var(--earth);
-  color: #fff;
+  background: var(--blue-dark);
 }
 .composer-btn:disabled {
-  opacity: 0.3;
+  background: var(--surface-2);
+  color: var(--ink-faint);
   cursor: default;
 }
 .composer-btn.stop {
-  background: transparent;
-  border: 1px solid var(--hairline);
-  color: var(--ink);
+  background: #fce8e6;
+  color: var(--seal);
 }
 .composer-btn.stop:hover {
-  border-color: var(--seal);
+  background: #fad2cf;
   color: var(--seal);
-  background: transparent;
 }
 .composer-hint {
-  margin: 8px 2px 0;
-  font-size: 10.5px;
-  letter-spacing: 0.02em;
+  margin: 9px 4px 0;
+  font-size: 11px;
+  letter-spacing: 0.01em;
   color: var(--ink-faint);
 }
 

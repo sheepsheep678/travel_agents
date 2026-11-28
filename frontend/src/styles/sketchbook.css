@@ -1,23 +1,36 @@
-/* ========== 手账纸墨主题（作用域隔离，不动 :root / Result.vue） ========== */
+/* ========== 全局设计 token（Google 风格：白底 / 灰阶文字 / Google 蓝强调色） ==========
+ * 保留原有 --paper / --ink / --earth / --seal 变量名，所有页面样式无需改引用即可换肤。
+ * --earth 在这里是「强调色」（Google 蓝），--seal 是「警示色」（Google 红）。
+ */
 
 .sketchbook,
 .sketchbook-mode {
-  --paper: #ece7dc;
-  --ink: #2b2721;
-  --ink-soft: rgba(43, 39, 33, 0.58);
-  --ink-faint: rgba(43, 39, 33, 0.36);
-  --hairline: rgba(43, 39, 33, 0.14);
-  --earth: #9a6a3e;
-  --seal: #b3402a;
-  --display: 'Instrument Serif', 'Noto Serif SC', 'Songti SC', Georgia, 'Times New Roman', serif;
-  --font: 'Newsreader', 'Noto Serif SC', 'Songti SC', Georgia, 'Times New Roman', serif;
-  --track-caps: 0.24em;
-  --track-nav: 0.06em;
+  --paper: #ffffff;
+  --surface: #f8f9fa;
+  --surface-2: #f1f3f4;
+  --ink: #202124;
+  --ink-soft: #5f6368;
+  --ink-faint: #9aa0a6;
+  --hairline: #dadce0;
+  --earth: #1a73e8;
+  --seal: #d93025;
+  --blue-50: #e8f0fe;
+  --blue-100: #d2e3fc;
+  --blue-dark: #1557b0;
+  --green: #137333;
+  --display: 'Google Sans', 'Product Sans', Roboto, 'Noto Sans SC', 'PingFang SC',
+    'Microsoft YaHei', system-ui, -apple-system, 'Segoe UI', sans-serif;
+  --font: 'Google Sans', 'Product Sans', Roboto, 'Noto Sans SC', 'PingFang SC',
+    'Microsoft YaHei', system-ui, -apple-system, 'Segoe UI', sans-serif;
+  --track-caps: 0.14em;
+  --track-nav: 0.01em;
+  --shadow-1: 0 1px 2px rgba(60, 64, 67, 0.1), 0 1px 3px 1px rgba(60, 64, 67, 0.06);
+  --shadow-2: 0 2px 6px rgba(60, 64, 67, 0.12), 0 8px 24px rgba(60, 64, 67, 0.12);
 }
 
 .sketchbook {
   position: relative;
-  background: var(--paper);
+  background: transparent;
   color: var(--ink);
   min-height: 100vh;
   font-family: var(--font);
@@ -25,26 +38,26 @@
   overflow-x: hidden;
 }
 
-/* 纸底 wash（纯 CSS，零外部资源） */
+/* 页面底色 wash（纯 CSS，零外部资源）：极淡的 Google 蓝光晕 */
 .sketchbook-wash {
   position: fixed;
   inset: 0;
   z-index: -1;
   pointer-events: none;
   background:
-    radial-gradient(1200px 700px at 12% -4%, rgba(154, 106, 62, 0.12), transparent 60%),
-    radial-gradient(900px 600px at 92% 104%, rgba(154, 106, 62, 0.09), transparent 55%),
-    radial-gradient(760px 520px at 50% 42%, rgba(255, 252, 244, 0.65), transparent 72%);
+    radial-gradient(900px 520px at 8% -8%, rgba(26, 115, 232, 0.07), transparent 62%),
+    radial-gradient(760px 460px at 94% 104%, rgba(66, 133, 244, 0.05), transparent 58%),
+    #ffffff;
 }
 
-/* ---- Antd 弹层（渲染在 body，需 body 类作用域）纸主题 ---- */
+/* ---- Antd 弹层（渲染在 body，需 body 类作用域）浅色主题 ---- */
 .sketchbook-mode .ant-picker-dropdown .ant-picker-panel-container,
 .sketchbook-mode .ant-select-dropdown {
-  background: var(--paper);
+  background: #ffffff;
   color: var(--ink);
   border: 1px solid var(--hairline);
-  border-radius: 4px;
-  box-shadow: 0 12px 30px -12px rgba(43, 39, 33, 0.25);
+  border-radius: 12px;
+  box-shadow: var(--shadow-2);
 }
 .sketchbook-mode .ant-picker-header,
 .sketchbook-mode .ant-picker-content th,
@@ -53,22 +66,27 @@
   color: var(--ink);
 }
 .sketchbook-mode .ant-picker-cell-in-view.ant-picker-cell-selected .ant-picker-cell-inner {
-  background: var(--ink);
-  color: var(--paper);
+  background: var(--earth);
+  color: #fff;
 }
 .sketchbook-mode .ant-picker-cell:hover:not(.ant-picker-cell-selected):not(.ant-picker-cell-range-start):not(.ant-picker-cell-range-end) .ant-picker-cell-inner {
-  background: rgba(43, 39, 33, 0.08);
+  background: var(--surface-2);
+}
+.sketchbook-mode .ant-picker-cell-in-view.ant-picker-cell-in-range::before {
+  background: var(--blue-50);
 }
 .sketchbook-mode .ant-select-item {
   color: var(--ink);
+  border-radius: 8px;
 }
 .sketchbook-mode .ant-select-item-option-selected:not(.ant-select-item-option-disabled) {
-  background: rgba(154, 106, 62, 0.14);
-  color: var(--earth);
+  background: var(--blue-50);
+  color: var(--blue-dark);
 }
 .sketchbook-mode .ant-message-notice-content {
-  background: var(--paper);
+  background: #ffffff;
   color: var(--ink);
   border: 1px solid var(--hairline);
-  box-shadow: 0 12px 30px -12px rgba(43, 39, 33, 0.25);
+  border-radius: 12px;
+  box-shadow: var(--shadow-2);
 }

@@ -24,8 +24,6 @@
         <button class="sidebar-item-remove" aria-label="删除对话" @click.stop="$emit('remove', s.id)">×</button>
       </div>
     </nav>
-
-    <p class="sidebar-foot">对话记录保存在服务端，换设备后仍可继续。</p>
   </aside>
 </template>
 
@@ -60,43 +58,47 @@ function fmtTime(ts: number): string {
   display: flex;
   flex-direction: column;
   flex: none;
-  width: 272px;
+  width: 276px;
   border-right: 1px solid var(--hairline);
-  background: rgba(255, 252, 244, 0.28);
+  background: var(--surface);
 }
 .sidebar-head {
   display: flex;
   align-items: center;
   gap: 10px;
-  padding: 16px 16px 10px;
+  padding: 16px 14px 10px;
 }
 .sidebar-new {
   flex: 1;
-  height: 40px;
-  border: 1px solid var(--hairline);
-  border-radius: 3px;
-  background: transparent;
+  height: 42px;
+  border: 0;
+  border-radius: 999px;
+  background: var(--blue-50);
   font-family: var(--font);
   font-size: 13px;
-  letter-spacing: 0.04em;
-  color: var(--ink);
+  font-weight: 500;
+  letter-spacing: 0.01em;
+  color: var(--blue-dark);
   cursor: pointer;
-  transition: border-color 0.2s, background 0.2s;
+  transition: background 0.18s;
 }
 .sidebar-new:hover {
-  border-color: var(--ink);
-  background: rgba(43, 39, 33, 0.04);
+  background: var(--blue-100);
 }
 .sidebar-close {
   display: none;
-  width: 32px;
-  height: 32px;
+  width: 36px;
+  height: 36px;
   border: 0;
+  border-radius: 50%;
   background: transparent;
   color: var(--ink-soft);
   font-size: 20px;
   line-height: 1;
   cursor: pointer;
+}
+.sidebar-close:hover {
+  background: var(--surface-2);
 }
 .sidebar-list {
   flex: 1;
@@ -105,8 +107,8 @@ function fmtTime(ts: number): string {
   padding: 6px 10px;
 }
 .sidebar-empty {
-  margin: 26px 8px;
-  font-size: 12px;
+  margin: 28px 8px;
+  font-size: 12.5px;
   line-height: 1.9;
   color: var(--ink-faint);
   text-align: center;
@@ -115,16 +117,14 @@ function fmtTime(ts: number): string {
   display: flex;
   align-items: center;
   gap: 4px;
-  border-left: 2px solid transparent;
-  border-radius: 2px;
-  transition: background 0.2s, border-color 0.2s;
+  border-radius: 10px;
+  transition: background 0.18s;
 }
 .sidebar-item:hover {
-  background: rgba(43, 39, 33, 0.04);
+  background: var(--surface-2);
 }
 .sidebar-item.active {
-  border-left-color: var(--seal);
-  background: rgba(255, 252, 244, 0.7);
+  background: var(--blue-50);
 }
 .sidebar-item-main {
   flex: 1;
@@ -132,7 +132,7 @@ function fmtTime(ts: number): string {
   display: flex;
   flex-direction: column;
   gap: 3px;
-  padding: 10px 8px 10px 10px;
+  padding: 10px 8px 10px 12px;
   border: 0;
   background: transparent;
   text-align: left;
@@ -146,15 +146,19 @@ function fmtTime(ts: number): string {
   font-size: 13px;
   color: var(--ink);
 }
+.sidebar-item.active .sidebar-item-title {
+  color: var(--blue-dark);
+  font-weight: 500;
+}
 .sidebar-item-time {
   font-size: 10.5px;
-  letter-spacing: 0.04em;
+  letter-spacing: 0.01em;
   color: var(--ink-faint);
 }
 .sidebar-item-remove {
   flex: none;
-  width: 26px;
-  height: 26px;
+  width: 28px;
+  height: 28px;
   margin-right: 4px;
   border: 0;
   border-radius: 50%;
@@ -164,7 +168,7 @@ function fmtTime(ts: number): string {
   line-height: 1;
   cursor: pointer;
   opacity: 0;
-  transition: opacity 0.2s, color 0.2s;
+  transition: opacity 0.18s, color 0.18s, background 0.18s;
 }
 .sidebar-item:hover .sidebar-item-remove,
 .sidebar-item.active .sidebar-item-remove {
@@ -172,16 +176,8 @@ function fmtTime(ts: number): string {
 }
 .sidebar-item-remove:hover {
   color: var(--seal);
+  background: rgba(217, 48, 37, 0.08);
 }
-.sidebar-foot {
-  margin: 0;
-  padding: 12px 16px 16px;
-  border-top: 1px solid var(--hairline);
-  font-size: 10.5px;
-  line-height: 1.65;
-  color: var(--ink-faint);
-}
-
 .sidebar-backdrop {
   display: none;
 }
@@ -201,9 +197,10 @@ function fmtTime(ts: number): string {
     inset: 0 auto 0 0;
     z-index: 60;
     width: min(300px, 84vw);
-    background: var(--paper);
+    background: #ffffff;
     transform: translateX(-100%);
-    transition: transform 0.28s ease;
+    transition: transform 0.28s cubic-bezier(0.2, 0.7, 0.3, 1);
+    box-shadow: var(--shadow-2);
   }
   .chat-sidebar.open {
     transform: translateX(0);
@@ -213,7 +210,7 @@ function fmtTime(ts: number): string {
     position: fixed;
     inset: 0;
     z-index: 55;
-    background: rgba(43, 39, 33, 0.28);
+    background: rgba(32, 33, 36, 0.32);
   }
   .sidebar-close {
     display: inline-flex;

@@ -97,6 +97,37 @@ const form = reactive<{
 // 从对话页带过来的 session_id，优先于当前浏览器默认会话 ID
 const prefillSessionId = ref<string | undefined>()
 
+/* ------- 日期 ↔ 游玩天数 双向同步 ------- */
+const MAX_TRIP_DAYS = 30
+
+/** 起止日期（含首尾）→ 天数，限制 1-30 */
+function spanDays(start: Dayjs, end: Dayjs): number {
+  const span = end.startOf('day').diff(start.startOf('day'), 'day') + 1
+  return Math.min(MAX_TRIP_DAYS, Math.max(1, span))
+}
+
+/** 日期变化时重算天数 */
+function syncDaysFromDates() {
+  if (!form.dates) return
+  const days = spanDays(form.dates[0], form.dates[1])
+  if (form.travel_days !== days) form.travel_days = days
+}
+
+/** 天数变化时从开始日推算结束日（保留用户选择的出发日期） */
+function syncDatesFromDays() {
+  const days = Math.min(MAX_TRIP_DAYS, Math.max(1, Number(form.travel_days) || 1))
+  const start = (form.dates?.[0] ?? dayjs().add(1, 'day')).startOf('day')
+  const end = start.add(days - 1, 'day')
+  if (!form.dates) {
+    form.dates = [start, end]
+  } else if (!form.dates[1].isSame(end, 'day')) {
+    form.dates = [form.dates[0], end]
+  }
+}
+
+watch(() => form.dates, syncDaysFromDates, { deep: true })
+watch(() => form.travel_days, syncDatesFromDays)
+
 // 当前翻开哪页 = 目的地城市
 watch(activeIndex, (i) => {
   form.city = cities[i].name
@@ -104,10 +135,10 @@ watch(activeIndex, (i) => {
 
 /* ------- 进度状态（由后端 SSE 流事件驱动） ------- */
 const steps = [
-  { icon: '🔍', label: '搜索景点', nodes: ['attraction_tool_node', 'attraction_enrich_node', 'rag_info_node', 'transport_tool_node'] },
-  { icon: '🌤️', label: '查询天气', nodes: ['weather_tool_node'] },
-  { icon: '🏨', label: '推荐酒店', nodes: ['hotel_tool_node', 'hotel_enrich_node'] },
-  { icon: '📋', label: '生成计划', nodes: ['plan_node'] },
+  { icon: '1', label: '搜索景点', nodes: ['attraction_tool_node', 'attraction_enrich_node', 'rag_info_node', 'transport_tool_node'] },
+  { icon: '2', label: '查询天气', nodes: ['weather_tool_node'] },
+  { icon: '3', label: '推荐酒店', nodes: ['hotel_tool_node', 'hotel_enrich_node'] },
+  { icon: '4', label: '生成计划', nodes: ['plan_node'] },
 ]
 
 // 节点所属阶段（与 steps 顺序一致），用于保证进度只进不退
@@ -355,12 +386,38 @@ onMounted(() => {
         form.city = p.city
       }
     }
-    if (p.start_date && p.end_date) {
-      const s = dayjs(p.start_date)
-      const e = dayjs(p.end_date)
-      if (s.isValid() && e.isValid()) form.dates = [s, e]
+    // 日期与天数保持一致：日期完整时以日期为准；只有天数时按天数推算结束日
+    const prefStart = p.start_date ? dayjs(p.start_date) : null
+    const prefEnd = p.end_date ? dayjs(p.end_date) : null
+    const hasStart = !!prefStart?.isValid()
+    const hasEnd = !!prefEnd?.isValid()
+    const wantedDays =
+      p.travel_days && p.travel_days > 0
+        ? Math.min(MAX_TRIP_DAYS, Math.max(1, p.travel_days))
+        : 0
+
+    if (hasStart || hasEnd) {
+      let from: Dayjs
+      let to: Dayjs
+      if (hasStart && hasEnd) {
+        from = prefStart!
+        to = prefEnd!
+      } else if (hasStart) {
+        from = prefStart!
+        to = from.add((wantedDays || 3) - 1, 'day')
+      } else {
+        to = prefEnd!
+        from = to.subtract((wantedDays || 3) - 1, 'day')
+      }
+      const start = from.startOf('day')
+      const end = to.startOf('day')
+      form.dates = start.isAfter(end) ? [end, start] : [start, end]
+      form.travel_days = spanDays(form.dates[0], form.dates[1])
+    } else if (wantedDays) {
+      form.travel_days = wantedDays
+      const from = (form.dates?.[0] ?? dayjs().add(1, 'day')).startOf('day')
+      form.dates = [from, from.add(wantedDays - 1, 'day')]
     }
-    if (p.travel_days) form.travel_days = p.travel_days
     if (p.transportation) form.transportation = p.transportation
     if (p.accommodation) form.accommodation = p.accommodation
     if (p.preferences?.length) form.preferences = [...p.preferences]
@@ -389,7 +446,7 @@ onUnmounted(() => {
 
 <style scoped>
 .sketchbook {
-  padding-bottom: 56px;
+  padding-bottom: 12px;
 }
 .back-home {
   position: fixed;
@@ -398,57 +455,61 @@ onUnmounted(() => {
   z-index: 120;
   display: inline-flex;
   align-items: center;
-  height: 32px;
-  padding: 0 13px;
+  height: 36px;
+  padding: 0 15px;
   border: 1px solid var(--hairline);
   border-radius: 999px;
-  background: rgba(236, 231, 220, 0.82);
-  backdrop-filter: blur(6px);
-  -webkit-backdrop-filter: blur(6px);
-  font-size: 12px;
-  letter-spacing: 0.04em;
+  background: rgba(255, 255, 255, 0.9);
+  backdrop-filter: blur(10px);
+  -webkit-backdrop-filter: blur(10px);
+  font-size: 12.5px;
+  letter-spacing: 0.01em;
   color: var(--ink-soft);
   text-decoration: none;
-  transition: color 0.2s, border-color 0.2s;
+  box-shadow: var(--shadow-1);
+  transition: color 0.2s, border-color 0.2s, background 0.2s;
 }
 .back-home:hover {
-  color: var(--ink);
-  border-color: var(--ink);
+  color: var(--blue-dark);
+  border-color: #c6dafc;
+  background: var(--blue-50);
 }
 .sb-head {
   text-align: center;
-  padding: 44px 20px 10px;
+  padding: 24px 20px 8px;
 }
 .sb-kicker {
-  margin: 0 0 12px;
-  font-size: 12px;
+  margin: 0 0 6px;
+  font-size: 11.5px;
+  font-weight: 500;
   letter-spacing: var(--track-caps);
   text-transform: uppercase;
-  color: var(--ink-soft);
+  color: var(--earth);
 }
 .sb-title {
   margin: 0;
   font-family: var(--display);
-  font-size: clamp(28px, 4vw, 44px);
-  font-weight: 400;
-  letter-spacing: 0.01em;
+  font-size: clamp(28px, 3.8vw, 44px);
+  line-height: 1.2;
+  font-weight: 500;
+  letter-spacing: -0.01em;
   color: var(--ink);
 }
 .sb-sub {
-  margin: 12px auto 0;
+  margin: 8px auto 0;
   font-size: 14px;
   color: var(--ink-soft);
-  line-height: 1.7;
-  max-width: 560px;
+  line-height: 1.6;
+  max-width: 580px;
 }
 
 @media (max-width: 560px) {
   .back-home {
     top: 12px;
     left: 12px;
-    height: 28px;
-    padding: 0 10px;
-    font-size: 11px;
+    height: 32px;
+    padding: 0 12px;
+    font-size: 11.5px;
   }
 }
 </style>

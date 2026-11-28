@@ -25,11 +25,6 @@
       </button>
     </div>
 
-    <div class="sb-captions">
-      <p class="sb-caption">{{ pages[shownIdx]?.name }}</p>
-    </div>
-    <p class="sb-hint">拖动左页翻页 · 键盘 ← → · 点击下方城市直达</p>
-
     <div class="sb-dots" role="list">
       <button
         v-for="(c, i) in pages"
@@ -526,7 +521,7 @@ watch(
 .sb-wrap {
   display: grid;
   justify-items: center;
-  gap: 18px;
+  gap: 14px;
   width: 100%;
   position: relative;
   z-index: 2;
@@ -544,17 +539,23 @@ watch(
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  padding: 6px 2px;
-  border: 0;
-  background: transparent;
-  color: var(--ink-faint);
+  width: 44px;
+  height: 44px;
+  padding: 0;
+  border: 1px solid var(--hairline);
+  border-radius: 50%;
+  background: #ffffff;
+  color: var(--ink-soft);
+  box-shadow: var(--shadow-1);
   cursor: pointer;
-  transition: color 0.2s;
+  transition: color 0.2s, background 0.2s, border-color 0.2s;
   -webkit-tap-highlight-color: transparent;
   z-index: 8;
 }
 .sb-arrow:hover {
-  color: var(--ink);
+  color: var(--blue-dark);
+  border-color: #c6dafc;
+  background: var(--blue-50);
 }
 
 /* 书的未变换外框：loupe 级的浮层放这里，只有 .sb-tilt 在其下倾斜缩放 */
@@ -562,8 +563,10 @@ watch(
   position: relative;
   flex: 1 1;
   min-width: 0;
-  max-width: 900px;
-  perspective: 1750px;
+  max-width: 960px;
+  /* 保持原版翻页模型，只放宽透视距离：减少抬起书页的上下扩张，
+     使 960px 大书页的下边缘在常见视口中也不会超出窗口 */
+  perspective: 2600px;
   perspective-origin: 50% 46%;
 }
 .sb-tilt {
@@ -591,7 +594,7 @@ watch(
   right: 5%;
   top: 27%;
   bottom: 2%;
-  background: radial-gradient(50% 50% at 50% 58%, rgba(58, 44, 26, 0.34) 0%, rgba(58, 44, 26, 0.19) 40%, rgba(58, 44, 26, 0) 74%);
+  background: radial-gradient(50% 50% at 50% 58%, rgba(32, 33, 36, 0.2) 0%, rgba(32, 33, 36, 0.11) 40%, rgba(32, 33, 36, 0) 74%);
   filter: blur(26px);
   opacity: calc(1 - var(--shade, 0) * 0.42);
 }
@@ -600,7 +603,7 @@ watch(
   right: 9%;
   top: 62%;
   bottom: 10%;
-  background: radial-gradient(50% 44% at 50% 42%, rgba(44, 32, 14, 0.4) 0%, rgba(44, 32, 14, 0.17) 48%, rgba(44, 32, 14, 0) 78%);
+  background: radial-gradient(50% 44% at 50% 42%, rgba(32, 33, 36, 0.26) 0%, rgba(32, 33, 36, 0.1) 48%, rgba(32, 33, 36, 0) 78%);
   filter: blur(11px);
   opacity: calc(1 - var(--shade, 0) * 0.5);
 }
@@ -609,7 +612,7 @@ watch(
   right: 12%;
   top: 70%;
   bottom: 17%;
-  background: radial-gradient(50% 52% at 50% 40%, rgba(40, 28, 10, 0.34) 0%, rgba(40, 28, 10, 0) 76%);
+  background: radial-gradient(50% 52% at 50% 40%, rgba(32, 33, 36, 0.2) 0%, rgba(32, 33, 36, 0) 76%);
   filter: blur(4px);
   opacity: calc(1 - var(--shade, 0) * 0.62);
 }
@@ -664,11 +667,11 @@ watch(
 }
 .gutter-shade.left {
   right: 0;
-  background: linear-gradient(270deg, rgba(52, 38, 20, 0.3), rgba(52, 38, 20, 0) 82%);
+  background: linear-gradient(270deg, rgba(32, 33, 36, 0.22), rgba(32, 33, 36, 0) 82%);
 }
 .gutter-shade.right {
   left: 0;
-  background: linear-gradient(90deg, rgba(52, 38, 20, 0.24), rgba(52, 38, 20, 0) 82%);
+  background: linear-gradient(90deg, rgba(32, 33, 36, 0.18), rgba(32, 33, 36, 0) 82%);
 }
 
 /* 翻页叶：嵌套条带形成曲面 */
@@ -762,11 +765,11 @@ watch(
 }
 .curl.next .face.front .sh,
 .curl.prev .face.back .sh {
-  background: linear-gradient(90deg, rgba(58, 43, 20, var(--a1, 0)), rgba(58, 43, 20, var(--a2, 0)));
+  background: linear-gradient(90deg, rgba(32, 33, 36, var(--a1, 0)), rgba(32, 33, 36, var(--a2, 0)));
 }
 .curl.next .face.back .sh,
 .curl.prev .face.front .sh {
-  background: linear-gradient(90deg, rgba(58, 43, 20, var(--a2, 0)), rgba(58, 43, 20, var(--a1, 0)));
+  background: linear-gradient(90deg, rgba(32, 33, 36, var(--a2, 0)), rgba(32, 33, 36, var(--a1, 0)));
 }
 .face .gl {
   position: absolute;
@@ -775,7 +778,7 @@ watch(
   top: var(--pg, 0%);
   bottom: var(--pg, 0%);
   pointer-events: none;
-  background: #fffaf0;
+  background: #ffffff;
   opacity: calc(var(--shade, 0) * var(--lit, 1) * var(--lit, 1) * 0.2);
 }
 
@@ -808,67 +811,56 @@ watch(
   top: 0;
   bottom: 0;
   left: 50%;
-  width: 43%;
+  width: 45%;
   z-index: 20;
   box-sizing: border-box;
-  padding: 6% 4% 6% 7%;
+  display: flex;
+  flex-direction: column;
+  padding: 3% 3% 2% 5%;
   overflow-y: auto;
 }
 .sb-sheet > * {
   width: 100%;
+  /* 表单不高时垂直居中；内容超出时 auto 归零，仍可正常滚动 */
+  margin-block: auto;
 }
 .sb-sheet::-webkit-scrollbar {
   width: 6px;
 }
 .sb-sheet::-webkit-scrollbar-thumb {
-  background: rgba(43, 39, 33, 0.18);
-}
-
-.sb-captions {
-  display: grid;
-  justify-items: center;
-  min-height: 30px;
-}
-.sb-caption {
-  margin: 0;
-  font-family: var(--display);
-  font-size: 24px;
-  letter-spacing: 0.04em;
-  color: var(--ink);
-}
-.sb-hint {
-  margin: 0;
-  font-size: 11px;
-  letter-spacing: 0.14em;
-  color: var(--ink-faint);
+  background: #dadce0;
+  border-radius: 999px;
 }
 
 .sb-dots {
+  position: relative;
+  z-index: 12;
   display: flex;
   flex-wrap: wrap;
   justify-content: center;
-  gap: 6px 8px;
-  max-width: 720px;
+  gap: 6px 6px;
+  max-width: 760px;
   padding: 0 8px;
 }
 .sb-dot {
   border: 0;
   background: transparent;
-  color: var(--ink-faint);
+  color: var(--ink-soft);
   cursor: pointer;
   font-family: var(--font);
   font-size: 13px;
-  letter-spacing: 0.04em;
-  padding: 3px 10px;
+  letter-spacing: 0.01em;
+  padding: 5px 13px;
   border-radius: 999px;
-  transition: color 0.2s, background-color 0.2s;
+  transition: color 0.18s, background-color 0.18s;
 }
 .sb-dot:hover {
   color: var(--ink);
+  background: var(--surface-2);
 }
 .sb-dot.active {
-  color: var(--paper);
-  background: var(--ink);
+  color: #ffffff;
+  background: var(--earth);
 }
 
 @media (max-width: 900px) {
@@ -890,16 +882,14 @@ watch(
   }
   .sb-sheet {
     position: static;
+    display: block;
     width: 100%;
     left: 0;
     padding: 24px 8px 8px;
     overflow: visible;
   }
-  .sb-hint {
-    font-size: 9.5px;
-    letter-spacing: 0.1em;
-    padding: 0 16px;
-    text-align: center;
+  .sb-sheet > * {
+    margin-block: 0;
   }
 }
 </style>

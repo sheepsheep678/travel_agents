@@ -100,96 +100,115 @@ const entries = [
 
 <style scoped>
 .landing-main {
-  padding-top: 66px;
+  padding-top: 76px;
 }
 
 /* ---- Hero ---- */
 .hero {
   display: grid;
-  grid-template-columns: 1.06fr 0.94fr;
-  gap: 54px;
+  grid-template-columns: 1.08fr 0.92fr;
+  gap: 64px;
   align-items: center;
 }
 .hero-kicker {
   margin: 0;
-  font-size: 11px;
+  font-size: 12px;
+  font-weight: 500;
   letter-spacing: var(--track-caps);
   color: var(--earth);
   text-transform: uppercase;
 }
 .hero-title {
-  margin: 20px 0 0;
+  margin: 18px 0 0;
   font-family: var(--display);
-  font-weight: 400;
-  font-size: clamp(40px, 5.2vw, 66px);
-  line-height: 1.16;
-  letter-spacing: 0.01em;
+  font-weight: 500;
+  font-size: clamp(40px, 5.2vw, 64px);
+  line-height: 1.14;
+  letter-spacing: -0.015em;
   color: var(--ink);
 }
 .hero-sub {
-  max-width: 520px;
+  max-width: 540px;
   margin: 24px 0 0;
-  font-size: 15px;
-  line-height: 1.9;
+  font-size: 16px;
+  line-height: 1.85;
   color: var(--ink-soft);
 }
 .hero-actions {
   display: flex;
   flex-wrap: wrap;
-  gap: 14px;
-  margin-top: 32px;
+  gap: 12px;
+  margin-top: 36px;
 }
 .hero-cities {
   display: flex;
   flex-wrap: wrap;
   align-items: baseline;
-  gap: 7px 15px;
-  margin: 36px 0 0;
+  gap: 4px 4px;
+  margin: 38px 0 0;
   padding: 0;
   list-style: none;
 }
 .hero-cities-label {
-  font-size: 10.5px;
+  margin-right: 6px;
+  font-size: 11px;
+  font-weight: 500;
   letter-spacing: var(--track-caps);
   color: var(--ink-faint);
   text-transform: uppercase;
 }
 .hero-cities a {
-  font-size: 12px;
+  padding: 3px 9px;
+  border-radius: 999px;
+  font-size: 12.5px;
   color: var(--ink-soft);
   text-decoration: none;
-  border-bottom: 1px solid transparent;
-  transition: color 0.2s, border-color 0.2s;
+  transition: color 0.18s, background 0.18s;
 }
 .hero-cities a:hover {
-  color: var(--earth);
-  border-bottom-color: var(--earth);
+  color: var(--blue-dark);
+  background: var(--blue-50);
 }
 .hero-cities-total {
-  padding-left: 15px;
+  margin-left: 8px;
+  padding-left: 14px;
   border-left: 1px solid var(--hairline);
-  font-size: 11.5px;
+  font-size: 12px;
   color: var(--ink-faint);
 }
 
 /* ---- Hero 明信片 ---- */
 .hero-art {
   position: relative;
-  min-height: 400px;
+  min-height: 430px;
+}
+.hero-art::before {
+  content: '';
+  position: absolute;
+  z-index: 0;
+  top: 6%;
+  right: -6%;
+  width: 340px;
+  height: 340px;
+  border-radius: 50%;
+  background: radial-gradient(circle at 35% 35%, rgba(66, 133, 244, 0.16), rgba(66, 133, 244, 0) 68%);
+  pointer-events: none;
 }
 .postcard {
   position: absolute;
   margin: 0;
-  padding: 10px 10px 30px;
-  background: rgba(255, 252, 244, 0.72);
+  padding: 9px 9px 14px;
+  background: #ffffff;
   border: 1px solid var(--hairline);
-  box-shadow: 0 26px 54px -34px rgba(43, 39, 33, 0.55);
+  border-radius: 20px;
+  box-shadow: var(--shadow-2);
 }
 .postcard-frame {
   position: relative;
   aspect-ratio: 4 / 3;
   overflow: hidden;
-  background: var(--paper);
+  border-radius: 13px;
+  background: var(--surface);
 }
 /* 城市图是 1760×1240 的整页图，地标只在左半幅：放大到 ~1.9 倍后左对齐裁切 */
 .postcard-frame img {
@@ -202,81 +221,88 @@ const entries = [
   transform: translateY(-50%);
 }
 .postcard figcaption {
-  margin-top: 9px;
+  margin: 9px 4px 0;
   text-align: right;
   font-family: var(--display);
+  font-weight: 500;
   font-size: 11px;
-  letter-spacing: 0.18em;
+  letter-spacing: 0.16em;
   color: var(--ink-faint);
   text-transform: uppercase;
 }
 .postcard.front {
   z-index: 2;
-  top: 34px;
+  top: 46px;
   right: 0;
-  width: 74%;
-  transform: rotate(2.2deg);
+  width: 76%;
 }
 .postcard.back {
   z-index: 1;
   top: 0;
   left: 0;
   width: 58%;
-  opacity: 0.9;
-  transform: rotate(-4deg);
+}
+.postcard.back .postcard-frame {
+  background: var(--surface-2);
 }
 .art-note {
   position: absolute;
   z-index: 3;
+  padding: 7px 14px;
+  border-radius: 999px;
+  background: #ffffff;
+  border: 1px solid var(--hairline);
+  box-shadow: var(--shadow-1);
   font-family: var(--display);
-  font-size: 12.5px;
-  letter-spacing: 0.08em;
-  color: var(--earth);
+  font-size: 12px;
+  font-weight: 500;
+  letter-spacing: 0.02em;
+  color: var(--ink-soft);
 }
-.art-note::after {
+.art-note::before {
   content: '';
-  display: block;
-  margin-top: 4px;
-  border-bottom: 1px dashed currentColor;
-  opacity: 0.5;
+  display: inline-block;
+  width: 7px;
+  height: 7px;
+  margin-right: 7px;
+  border-radius: 50%;
+  background: #34a853;
 }
 .note-b {
-  right: 1%;
-  top: 2px;
-  transform: rotate(2deg);
+  right: 2%;
+  top: 0;
 }
 
 /* ---- 双入口 ---- */
 .entries {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 18px;
-  margin-top: 78px;
+  gap: 20px;
+  margin-top: 88px;
 }
 .entry-card {
   display: flex;
   align-items: flex-start;
   gap: 18px;
-  padding: 26px 28px 24px;
-  background: rgba(255, 252, 244, 0.5);
+  padding: 28px 30px 26px;
+  background: #ffffff;
   border: 1px solid var(--hairline);
-  border-radius: 4px;
+  border-radius: 20px;
   color: var(--ink);
   text-decoration: none;
-  transition: transform 0.25s, border-color 0.25s, box-shadow 0.25s, background 0.25s;
+  transition: transform 0.25s, border-color 0.25s, box-shadow 0.25s;
 }
 .entry-card:hover {
-  transform: translateY(-3px);
-  border-color: rgba(43, 39, 33, 0.3);
-  background: rgba(255, 252, 244, 0.78);
-  box-shadow: 0 22px 42px -32px rgba(43, 39, 33, 0.65);
+  transform: translateY(-2px);
+  border-color: #c6dafc;
+  box-shadow: var(--shadow-2);
 }
 .entry-index {
-  padding-top: 5px;
-  font-family: var(--display);
+  padding-top: 4px;
+  font-family: ui-monospace, 'SFMono-Regular', Menlo, Consolas, monospace;
   font-size: 12px;
-  letter-spacing: 0.14em;
-  color: var(--ink-faint);
+  letter-spacing: 0.08em;
+  color: var(--earth);
 }
 .entry-body {
   flex: 1;
@@ -284,36 +310,37 @@ const entries = [
 .entry-title {
   margin: 0;
   font-family: var(--display);
-  font-weight: 400;
-  font-size: 24px;
-  letter-spacing: 0.03em;
+  font-weight: 500;
+  font-size: 22px;
+  letter-spacing: 0.01em;
 }
 .entry-title em {
   margin-left: 10px;
-  padding: 2px 7px;
-  border: 1px solid rgba(179, 64, 42, 0.35);
-  border-radius: 2px;
+  padding: 2px 9px;
+  border-radius: 999px;
+  background: var(--blue-50);
   font-family: var(--font);
   font-style: normal;
   font-size: 10px;
-  letter-spacing: 0.12em;
-  color: var(--seal);
+  font-weight: 500;
+  letter-spacing: 0.08em;
+  color: var(--blue-dark);
   vertical-align: 4px;
 }
 .entry-desc {
   margin: 10px 0 0;
-  font-size: 13px;
+  font-size: 13.5px;
   line-height: 1.75;
   color: var(--ink-soft);
 }
 .entry-arrow {
-  font-size: 17px;
+  font-size: 18px;
   color: var(--ink-faint);
   transition: transform 0.25s, color 0.25s;
 }
 .entry-card:hover .entry-arrow {
   transform: translateX(4px);
-  color: var(--ink);
+  color: var(--earth);
 }
 
 /* ---- 响应式 ---- */
@@ -323,18 +350,18 @@ const entries = [
     gap: 42px;
   }
   .hero-art {
-    min-height: 330px;
-    max-width: 540px;
+    min-height: 340px;
+    max-width: 560px;
   }
   .entries {
     grid-template-columns: 1fr;
-    margin-top: 58px;
+    margin-top: 64px;
   }
 }
 
 @media (max-width: 560px) {
   .landing-main {
-    padding-top: 38px;
+    padding-top: 40px;
   }
   .hero-art {
     display: none;
@@ -348,11 +375,12 @@ const entries = [
   }
   .hero-cities-total {
     width: 100%;
+    margin-left: 0;
     padding-left: 0;
     border-left: 0;
   }
   .entries {
-    margin-top: 44px;
+    margin-top: 48px;
   }
 }
 </style>
