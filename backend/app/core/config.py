@@ -401,6 +401,14 @@ class Settings:
         writeback_knowledge_gap: bool = Field(
             default=True, validation_alias="MEMORY_WRITEBACK_KNOWLEDGE_GAP"
         )
+        # 写入前做冲突消解：新记忆推翻旧记忆时删除旧条目
+        conflict_enabled: bool = Field(
+            default=True, validation_alias="MEMORY_CONFLICT_ENABLED"
+        )
+        # 每种记忆类别参与冲突判定的候选条数
+        conflict_candidates: int = Field(
+            default=20, validation_alias="MEMORY_CONFLICT_CANDIDATES"
+        )
 
     class Mcp(_SettingsGroup):
         init_timeout: float = Field(default=60.0, validation_alias="MCP_INIT_TIMEOUT")

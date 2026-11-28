@@ -10,6 +10,7 @@ MEMORY_COMPRESS_SYSTEM = """你是会话记忆压缩器。把窗口外的历史�
 - 优先保留用户需求、关键决策和未完成事项，闲聊只保留结论；
 - 不确定的信息放进 pending_facts，并在句末标注“（待确认）”，不要猜测或改写事实；
 - confirmed_facts 只放稳定的用户确认信息；天气、余票、票价等实时信息只留在 summary；
+- 若新对话明确推翻或替代了“已知事实”中的某条，把那条旧事实原文放进 removed_facts，不要同时保留新旧两条矛盾事实；
 - 不要写寒暄和重复内容，summary 不超过 {max_chars} 字。
 只输出结构化结果。"""
 
@@ -59,4 +60,28 @@ def build_extract_user(query: str, reply: str, transcript: str) -> str:
         f"用户本轮输入：{query}\n"
         f"助手本轮回复：{(reply or '无')[:800]}\n\n"
         f"最近对话：\n{transcript}"
+    )
+
+
+MEMORY_CONFLICT_SYSTEM = """你负责维护用户的长期记忆，判断新记忆是否推翻已有记忆。
+规则：
+- 只有当新记忆与某条已有记忆属于同一主题（同一个偏好、事实、规则或任务结论），
+  且新记忆明确推翻、更新或替代旧记忆时，才把旧记忆判为被取代；
+- 同一主题的补充信息（例如又多喜欢了一样东西）不算冲突，不要标记；
+- 仅措辞不同、内容一致的不算冲突，不要标记；
+- 只能从给定候选里选择，不要编造 id 或事实；无法确定时宁可保留，不要删除；
+- 被取代的旧事实只从“已有会话事实”里选取原文。
+只输出结构化结果。"""
+
+
+def build_conflict_user(
+    new_items: str,
+    memory_candidates: str,
+    facts: str,
+) -> str:
+    """冲突判定的用户提示：新记忆 + 已有长期记忆候选 + 会话事实。"""
+    return (
+        f"新抽取的记忆：\n{new_items or '无'}\n\n"
+        f"已有长期记忆候选（id | 类别 | 内容）：\n{memory_candidates or '无'}\n\n"
+        f"已有会话事实：\n{facts or '无'}"
     )

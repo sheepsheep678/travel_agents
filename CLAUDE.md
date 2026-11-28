@@ -219,6 +219,8 @@ START → memory_load（加载/压缩记忆）→ intent（正则寒暄 → 快�
 
 写入时机：`memory_load`（轮首）负责加载与压缩；`memory_save`（轮末）只把任务挂到后台，异步完成四类触发——明确“记住…”指令、摘要确认事实升级、每 `MEMORY_EXTRACT_INTERVAL_ROUNDS` 轮批量抽取、知识检索失败回写“知识缺口”。所有记忆读写失败只记 warning，绝不阻断对话或推迟 `done` 事件。
 
+冲突消解：新抽取的 confirmed 记忆（`preference/fact/rule/task_result`）写入前，按 `user_id + city + kind` 拉取已确认旧记忆交给快模型判定；确认被推翻时先插入新记忆、再 `adelete_memory_ids` 删除旧条目，并同步剔除 `session_memories.facts` 中被推翻的事实。摘要压缩用 `removed_facts` 做同样的替换。程序记忆（`workflow/lesson/gap`）保持只追加；判定失败按追加降级。
+
 提示词只注入精简区块：会话摘要、已确认事实、待确认信息（明确标注“待确认”）、当前任务状态、长期记忆 top-k；检索只返回 `status=confirmed` 的长期记忆。
 
 管理接口：`GET /api/v1/memory`、`DELETE /api/v1/memory/{memory_id}`、`DELETE /api/v1/memory`、`GET /api/v1/memory/session/{session_id}`（均需 `user_id`，会话接口还会校验归属）。

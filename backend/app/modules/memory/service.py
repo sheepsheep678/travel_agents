@@ -41,15 +41,18 @@ from backend.app.integrations.memory_milvus import (
 from backend.app.modules.memory.models import SessionMemory
 from backend.app.modules.memory.prompts import (
     MEMORY_COMPRESS_SYSTEM,
+    MEMORY_CONFLICT_SYSTEM,
     MEMORY_EXTRACT_SYSTEM,
     MEMORY_MERGE_SYSTEM,
     build_compress_user,
+    build_conflict_user,
     build_extract_user,
     build_merge_user,
 )
 from backend.app.modules.memory.repository import SessionMemoryRepository
 from backend.app.modules.memory.types import (
     MemoryCompression,
+    MemoryConflict,
     MemoryExtraction,
     MemoryItem,
     MemoryKind,
@@ -72,6 +75,14 @@ _KIND_LABELS = {
     MemoryKind.lesson.value: "经验教训",
     MemoryKind.gap.value: "知识缺口",
 }
+# 只有语义记忆参与冲突消解；程序记忆（工作流/经验/知识缺口）保持追加语义
+_CONFLICT_KINDS = {
+    MemoryKind.preference,
+    MemoryKind.fact,
+    MemoryKind.rule,
+    MemoryKind.task_result,
+}
+_CONFLICT_KIND_VALUES = {kind.value for kind in _CONFLICT_KINDS}
 
 _background_tasks: set[asyncio.Task] = set()
 
@@ -181,13 +192,35 @@ def _dedupe_text(items: Sequence[Any], limit: int = 20) -> List[str]:
     return result
 
 
-def _merge_facts(existing: Any, confirmed: Sequence[str], pending: Sequence[str]) -> dict:
-    """合并已确认/待确认事实；待确认项统一加标记。"""
+def _norm_fact(text: Any) -> str:
+    """事实文本归一化：合并空白并去掉“待确认”标记，用于冲突匹配。"""
+    value = " ".join(str(text or "").split())
+    return value.replace("（待确认）", "").replace("(待确认)", "").strip()
+
+
+def _merge_facts(
+    existing: Any,
+    confirmed: Sequence[str],
+    pending: Sequence[str],
+    removed: Sequence[str] = (),
+) -> dict:
+    """合并已确认/待确认事实；被推翻的旧事实先剔除，待确认项统一加标记。"""
     base = existing if isinstance(existing, dict) else {}
-    confirmed_items = _dedupe_text(list(base.get("confirmed") or []) + list(confirmed))
+    removed_set = {_norm_fact(item) for item in removed if _norm_fact(item)}
+    kept_confirmed = [
+        item
+        for item in list(base.get("confirmed") or [])
+        if _norm_fact(item) not in removed_set
+    ]
+    kept_pending = [
+        item
+        for item in list(base.get("pending") or [])
+        if _norm_fact(item) not in removed_set
+    ]
+    confirmed_items = _dedupe_text(kept_confirmed + list(confirmed))
     pending_items = [
         item if "待确认" in item else f"{item}（待确认）"
-        for item in list(base.get("pending") or []) + list(pending)
+        for item in kept_pending + list(pending)
     ]
     return {
         "confirmed": confirmed_items,
@@ -375,6 +408,7 @@ class MemoryService:
             row.facts,
             result.confirmed_facts if isinstance(result.confirmed_facts, list) else [],
             result.pending_facts if isinstance(result.pending_facts, list) else [],
+            result.removed_facts if isinstance(result.removed_facts, list) else [],
         )
         task_payload = result.task_state
         if hasattr(task_payload, "model_dump"):
@@ -468,6 +502,198 @@ class MemoryService:
             logger.warning("摘要合并失败，保留最新部分", error=str(exc))
         return merged[-limit:]
 
+    # ------------------------------------------------------------------
+    # 写入侧冲突消解：新记忆推翻旧记忆时删除旧条目
+    # ------------------------------------------------------------------
+
+    async def _conflict_candidates(
+        self, user_id: str, city: str, kinds: Sequence[str]
+    ) -> List[dict]:
+        """按类别读取已确认的现有记忆，作为冲突判定候选（不触发 embedding）。"""
+        limit = max(1, int(settings.memory.conflict_candidates))
+        # Milvus 的 query 在过滤后按任意顺序截断，先多取再按 created_at 排序
+        query_limit = min(100, max(limit * 3, 30))
+        rows: List[dict] = []
+        seen: set[str] = set()
+        for kind in kinds:
+            try:
+                items = await aquery_memories(
+                    user_id, city=city, kind=kind, limit=query_limit
+                )
+            except Exception as exc:
+                logger.warning("冲突候选读取失败", kind=kind, error=str(exc))
+                continue
+            for item in items:
+                memory_id = str(item.get("id") or "")
+                if not memory_id or memory_id in seen:
+                    continue
+                if str(item.get("status") or "") != "confirmed":
+                    continue
+                seen.add(memory_id)
+                rows.append(item)
+        rows.sort(key=lambda row: int(row.get("created_at") or 0), reverse=True)
+        return rows[: limit * 2]
+
+    async def _resolve_conflicts(
+        self,
+        items: Sequence[MemoryItem],
+        user_id: str,
+        city: str,
+        session_id: str,
+    ) -> Optional[MemoryConflict]:
+        """用快模型判断新记忆是否推翻已有记忆；失败返回 None（按追加处理）。"""
+        if not settings.memory.conflict_enabled:
+            return None
+        # 只有达到 confirmed 的新记忆才允许取代旧记忆
+        semantic = [
+            (
+                item,
+                item.kind.value if hasattr(item.kind, "value") else str(item.kind),
+            )
+            for item in items
+            if float(item.confidence or 0.0) >= 0.7
+        ]
+        semantic = [
+            (item, kind)
+            for item, kind in semantic
+            if kind in _CONFLICT_KIND_VALUES
+        ]
+        if not semantic:
+            return None
+
+        kinds = sorted({kind for _, kind in semantic})
+        candidates = await self._conflict_candidates(user_id, city, kinds)
+        confirmed_facts: List[str] = []
+        if session_id:
+            row = await self.repo.get(session_id, user_id)
+            facts = (
+                row.facts if row is not None and isinstance(row.facts, dict) else {}
+            )
+            confirmed_facts = [
+                str(fact)
+                for fact in (facts.get("confirmed") or [])
+                if str(fact).strip()
+            ]
+        if not candidates and not confirmed_facts:
+            return None
+
+        lines: List[str] = []
+        for item, kind in semantic:
+            content = " ".join(str(item.content or "").split())[:200]
+            lines.append(
+                f"- [{_KIND_LABELS.get(kind, kind)}] {content}"
+                f"（城市：{item.city or city or '不限'}）"
+            )
+        new_items_text = "\n".join(lines)
+        memory_text = "\n".join(
+            f"{row.get('id')} | "
+            f"{_KIND_LABELS.get(str(row.get('kind') or ''), str(row.get('kind') or ''))}"
+            f" | {str(row.get('content') or '')[:160]}"
+            for row in candidates
+        )
+        facts_text = "\n".join(f"- {fact}" for fact in confirmed_facts)
+
+        try:
+            model = get_fast_llm().with_structured_output(MemoryConflict)
+            async with asyncio.timeout(settings.memory.summary_timeout):
+                result = await model.ainvoke(
+                    [
+                        SystemMessage(content=MEMORY_CONFLICT_SYSTEM),
+                        HumanMessage(
+                            content=build_conflict_user(
+                                new_items_text, memory_text, facts_text
+                            )
+                        ),
+                    ]
+                )
+        except Exception as exc:
+            logger.warning("记忆冲突判定失败，按追加处理", error=str(exc))
+            return None
+        if isinstance(result, dict):
+            try:
+                result = MemoryConflict(**result)
+            except Exception:
+                return None
+        if not isinstance(result, MemoryConflict):
+            return None
+
+        # 只接受候选里真实存在的 id / 事实，防止模型编造
+        valid_ids = {str(row.get("id") or "") for row in candidates}
+        superseded_ids: List[str] = []
+        for memory_id in result.superseded_memory_ids:
+            memory_id = str(memory_id)
+            if memory_id in valid_ids and memory_id not in superseded_ids:
+                superseded_ids.append(memory_id)
+        original_facts = {_norm_fact(fact): str(fact) for fact in confirmed_facts}
+        superseded_facts: List[str] = []
+        for fact in result.superseded_facts:
+            original = original_facts.get(_norm_fact(fact))
+            if original and original not in superseded_facts:
+                superseded_facts.append(original)
+        if not superseded_ids and not superseded_facts:
+            return None
+        return MemoryConflict(
+            superseded_memory_ids=superseded_ids,
+            superseded_facts=superseded_facts,
+        )
+
+    async def _apply_conflicts(
+        self, conflict: Optional[MemoryConflict], user_id: str, session_id: str
+    ) -> None:
+        """新记忆写入成功后，删除被取代的旧记忆与旧事实。"""
+        if conflict is None:
+            return
+        if conflict.superseded_memory_ids:
+            try:
+                deleted = await adelete_memory_ids(
+                    conflict.superseded_memory_ids, user_id
+                )
+                if deleted:
+                    logger.info(
+                        "旧长期记忆已被新记忆取代",
+                        user_id=user_id,
+                        deleted=deleted,
+                    )
+            except Exception as exc:
+                logger.warning("删除被取代的长期记忆失败", error=str(exc))
+        if conflict.superseded_facts and session_id:
+            await self._drop_session_facts(
+                session_id, user_id, conflict.superseded_facts
+            )
+
+    async def _drop_session_facts(
+        self, session_id: str, user_id: str, removed: Sequence[str]
+    ) -> None:
+        """从会话记忆里删除被新对话推翻的事实。"""
+        drop = {_norm_fact(item) for item in removed if _norm_fact(item)}
+        if not drop:
+            return
+        row = await self.repo.get(session_id, user_id)
+        if row is None:
+            return
+        facts = row.facts if isinstance(row.facts, dict) else {}
+        confirmed = [
+            fact
+            for fact in (facts.get("confirmed") or [])
+            if _norm_fact(fact) not in drop
+        ]
+        pending = [
+            fact
+            for fact in (facts.get("pending") or [])
+            if _norm_fact(fact) not in drop
+        ]
+        if len(confirmed) == len(facts.get("confirmed") or []) and len(
+            pending
+        ) == len(facts.get("pending") or []):
+            return
+        await self.repo.upsert(
+            session_id,
+            user_id,
+            facts={"confirmed": confirmed, "pending": pending},
+            turn_count=row.turn_count,
+        )
+        logger.info("会话事实已被新对话推翻", session_id=session_id, count=len(removed))
+
     async def remember_items(
         self,
         items: Sequence[MemoryItem],
@@ -475,7 +701,7 @@ class MemoryService:
         session_id: str = "",
         city: str = "",
     ) -> int:
-        """把抽取结果写入 Milvus；按内容哈希去重，失败只降级。"""
+        """把抽取结果写入 Milvus；按内容哈希去重，冲突时删除被取代的旧记忆。"""
         if (
             not settings.memory.enabled
             or not settings.memory.long_term_enabled
@@ -486,6 +712,7 @@ class MemoryService:
 
         now = int(time.time())
         rows: List[dict] = []
+        kept: List[MemoryItem] = []
         seen: set[str] = set()
         for item in items:
             if len(rows) >= 10:
@@ -507,6 +734,7 @@ class MemoryService:
                 existing = []
             if existing:
                 continue
+            kept.append(item)
             rows.append(
                 {
                     "id": uuid.uuid4().hex,
@@ -527,11 +755,14 @@ class MemoryService:
 
         if not rows:
             return 0
+        # 写入前先判定冲突；写入成功后才删除旧条目，避免删除后写入失败丢记忆
+        conflict = await self._resolve_conflicts(kept, user_id, city, session_id)
         try:
             count = await ainsert_memories(rows)
         except Exception as exc:
             logger.warning("长期记忆写入失败", error=str(exc))
             return 0
+        await self._apply_conflicts(conflict, user_id, session_id)
         logger.info("长期记忆已写入", user_id=user_id, count=count)
         return count
 

@@ -47,6 +47,9 @@ class MemoryCompression(BaseModel):
     pending_facts: list[str] = Field(
         default_factory=list, description="不确定的信息，自动标注“待确认”"
     )
+    removed_facts: list[str] = Field(
+        default_factory=list, description="被新对话推翻的旧事实原文"
+    )
     task_state: TaskState = Field(default_factory=TaskState, description="当前任务状态")
 
 
@@ -64,6 +67,17 @@ class MemoryExtraction(BaseModel):
     """长期记忆抽取结果。"""
 
     items: list[MemoryItem] = Field(default_factory=list, description="可长期保存的记忆")
+
+
+class MemoryConflict(BaseModel):
+    """新记忆与已有记忆的冲突判定结果。"""
+
+    superseded_memory_ids: list[str] = Field(
+        default_factory=list, description="被新记忆推翻的长期记忆 id"
+    )
+    superseded_facts: list[str] = Field(
+        default_factory=list, description="被新对话推翻的会话事实原文"
+    )
 
 
 class MemoryContext(BaseModel):
